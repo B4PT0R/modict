@@ -1,7 +1,10 @@
 import pytest
 
+from typing import Protocol, TypedDict, TypeVar, runtime_checkable
+
 import modict as modict_pkg
 from modict import (
+    CoercionError,
     TypeMismatchError,
     coerce,
     modict,
@@ -191,3 +194,49 @@ def test_typechecked_decorator_checks_args_and_return():
 
     with pytest.raises(TypeMismatchError):
         bad_return(1)  # wrong return type
+
+
+def test_protocol_validation_in_modict():
+    @runtime_checkable
+    class HasName(Protocol):
+        name: str
+        def greet(self) -> str: ...
+
+    class Greeter:
+        def __init__(self, name: str) -> None:
+            self.name = name
+        def greet(self) -> str:
+            return f"hi {self.name}"
+
+    class Wrapper(modict):
+        _config = modict.config(strict=True)
+        user: HasName
+
+    w = Wrapper(user=Greeter("Alice"))
+    assert w.user.greet() == "hi Alice"
+
+    with pytest.raises(TypeError):
+        w.user = {"name": "Bob"}  # missing greet()
+
+
+def test_typed_dict_validation():
+    class UserTD(TypedDict):
+        name: str
+        age: int
+
+    class WithTD(modict):
+        _config = modict.config(strict=True)
+        user: UserTD
+
+    ok = WithTD(user={"name": "Alice", "age": 30})
+    assert ok.user["age"] == 30
+
+    with pytest.raises(TypeError):
+        ok.user = {"name": "MissingAge"}
+
+
+def test_typevar_coercion_and_constraints():
+    TBound = TypeVar("TBound", bound=int)
+    assert coerce("5", TBound) == 5
+    with pytest.raises(CoercionError):
+        coerce("abc", TBound)

@@ -327,7 +327,6 @@ backup = user.deepcopy()
 # let's turn auto-conversion off globally (affects all modict instances created after this change)
 modict._config.auto_convert = False
 
-# Convert existing dicts to modicts (recursive)
 data = {"user": {"name": "Alice"}, "count": 42}
 
 safe_modict = modict(data)            # No auto-conversion
@@ -417,6 +416,70 @@ This limitation rarely affects normal usage of modict as a data structure.
 | JSON integration | ✅ Built-in | ❌ Manual | ❌ Manual | ✅ Built-in |
 | Learning curve | 🟡 Medium | 🟢 Low | 🟢 Low | 🔴 High |
 | Performance | 🟡 Good | 🟢 Excellent | 🟢 Excellent | 🟡 Good |
+
+## 📖 Public API Reference
+
+### Core class
+- `modict(**kwargs | mapping)`: dict subclass with attribute access, defaults, validation
+- `modict.config(auto_convert=True, allow_extra=True, strict=False, enforce_json=False, coerce=False)`: build a `modictConfig` for subclasses
+- `modict.factory(callable)`: declare per-instance default factories for fields
+- `modict.check(field_name)`: decorator to attach field validators
+- `modict.computed(func=None, *, cache=False, deps=None)`: decorator/constructor for cached computed fields
+
+### Instance helpers
+- `.to_modict()`: deep-convert nested dicts into modict instances in place
+- `.to_dict()`: deep-convert modicts back to plain dicts (preserving sharing)
+- `.get_nested(path, default=MISSING)`: fetch nested value via dot/tuple path
+- `.set_nested(path, value)`: assign nested value, creating missing levels
+- `.del_nested(path)`: delete a nested key/path
+- `.pop_nested(path, default=MISSING)`: pop a nested key/path
+- `.has_nested(path)`: check existence of a nested path
+- `.rename(mapping_or_kwargs)`: rename keys without touching values
+- `.exclude(*keys)`: return a new modict excluding given keys
+- `.extract(*keys)`: return a new modict with only given keys
+- `.walk(callback=None, filter=None, excluded=None)`: iterate leaf paths/values with optional transform/filter
+- `.walked(callback=None, filter=None)`: return dict of walked paths/values
+- `.merge(mapping)`: deep-merge another mapping into self
+- `.diff(mapping)`: structural diff vs another mapping
+- `.deep_equals(mapping)`: deep equality check vs another mapping
+- `.deepcopy()`: deep-copy preserving type
+- `modict.unwalk(walked)`: reconstruct a nested structure from walked output
+- `.dumps(**json_kwargs)`: serialize to JSON string using `json.dumps`
+- `.dump(fp, **json_kwargs)`: serialize to JSON file-like/path using `json.dump`
+- `modict.loads(json_str, **json_kwargs)`: classmethod JSON string loader returning modict
+- `modict.load(fp, **json_kwargs)`: classmethod JSON file loader returning modict
+- Dict compatibility: `keys()/values()/items()` validated views; `|`/`|=` merge with validation; `copy()`, `popitem()`, `setdefault()` validated dict semantics
+
+### Class/staticmethods
+- `modict.convert(obj)`: recursively upgrade nested dicts to modict, preserving shared references when possible
+- `modict.unconvert(obj, seen=None)`: recursively downgrade modicts to plain dicts
+- `modict.fromkeys(iterable, value=None)`: standard dict API
+
+### Type utilities (exported from `modict`)
+- `check_type(hint, value)`: validate a value against a type hint (strict)
+- `coerce(value, hint)`: coerce a value to the hinted type when possible
+- `@typechecked`: enforce annotated args/return types at call time on a callable
+- Exceptions: `TypeCheckError`, `TypeCheckException`, `TypeCheckFailureError`, `TypeMismatchError`, `CoercionError`
+- Helpers/metadata: `Coercer`, `TypeChecker`, `__version__`, `__title__`, `__description__`, `__url__`, `__author__`, `__email__`, `__license__`
+
+## 🧠 Typechecker & Coercion
+
+The bundled typechecker/coercion engine supports a broad slice of Python typing:
+
+- **PEP 604 unions**: `int | str`, `list[int] | None`
+- **Typing constructs**: `List[T]`, `Dict[K, V]`, `Tuple[...]`, `Set[...]`, `Optional[...]`, `Union[...]`, `Literal[...]`, `Callable[[...], R]`
+- **Protocols**: runtime-checkable `Protocol` support (attribute presence and callability)
+- **TypedDict**: key/value checking against TypedDict definitions
+- **NewType**: treated as underlying type
+- **Callables**: signature arity/type checks, including `Callable[..., R]` and `Callable[[A, B], R]`
+- **Generics / TypeVars**: parameterized generics with type arguments (e.g., `list[int]`, `dict[str, float]`) and robust TypeVar handling (propagated through nested containers/unions)
+- **Custom classes**: regular `isinstance` semantics, including subclass checks
+- **Nested structures**: deep validation/coercion of containers, preserving shared references
+- **Coercion rules**: best-effort conversions for numbers (`"1"`→`int`), sequences/iterables to typed containers, tuple/list interchange when possible, dict-like sources to typed mappings, and unions (first matching branch wins)
+- **Decorators**: `@typechecked` enforces annotations on args/return at runtime
+- **Config toggles**: per-modict `_config` can enable `strict` (type errors), `coerce` (auto-coercion), and `enforce_json` (JSON-serializable only)
+
+Limitations: structural protocols without `@runtime_checkable`, detailed variance, and advanced typing constructs (e.g., ParamSpec, TypeVar constraints) aren’t enforced; coercion is best-effort and may leave values unchanged if no safe conversion is found.
 
 ## 🤝 Contributing
 
