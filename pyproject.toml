@@ -1,15 +1,18 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = [
+    "setuptools>=61.0",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "modict"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Python package named modict"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { file = "LICENSE" }
-authors = [{ name = "baptiste", email = "bferrand.maths@gmail.com" }]
+authors = [
+    { name = "baptiste", email = "bferrand.maths@gmail.com" },
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -17,8 +20,17 @@ classifiers = [
 ]
 dependencies = []
 
+[project.license]
+file = "LICENSE"
+
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "pytest-html>=4.1.1", "flake8", "black"]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pytest-html>=4.1.1",
+    "flake8",
+    "black",
+]
 
 [project.urls]
 Homepage = "https://github.com/B4PT0R/modict"
@@ -27,7 +39,9 @@ Homepage = "https://github.com/B4PT0R/modict"
 modict = "modict.__main__:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = [
+    ".",
+]
 
 [tool.pytest.ini_options]
 addopts = "-p no:asyncio -p no:rerunfailures"

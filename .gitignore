@@ -6,6 +6,7 @@ pkgmngr.toml
 
 # pkgmngr snapshots
 snapshots/
+deploy.py
 
 # Example of pkgmngr-specific exclusions
 # Git will ignore lines with a leading #pkgmngr comment, but snapshot will use them
