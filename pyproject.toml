@@ -6,10 +6,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "modict"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Python package named modict"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     { name = "baptiste", email = "bferrand.maths@gmail.com" },
 ]
