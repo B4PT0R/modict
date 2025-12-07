@@ -3,7 +3,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**modict** is a sophisticated, hybrid data structure that combines the simplicity of Python dictionaries with the power of dataclasses and the robustness and solid runtime typechecking of Pydantic models. It's designed to be the versatile tool you'll want to use in every project for handling structured data.
+**modict** is a sophisticated, hybrid data structure that combines the simplicity of Python dictionaries with the power of dataclasses and the robustness and runtime typechecking capabilities of Pydantic models. It's designed to be the versatile tool you'll want to use in every project for handling structured data.
 
 ## 🎯 Philosophy & Goals
 
@@ -11,8 +11,9 @@
 
 - **📚 Dict-like**: Native dictionary inheritance with full compatibility - modicts ARE dicts!
 - **🏗️ Dataclass-like**: Type annotations and structured field definitions  
-- **🛡️ Pydantic-like**: Runtime validation, type coercion, and computed properties
+- **🛡️ Pydantic-like**: Runtime validation, type coercion, custom validators, and computed properties
 - **🔧 Developer-friendly**: Intuitive API that "just works" for common patterns
+- **100% standard library** - No external dependencies, all is coded from scratch including the typechecker and coercion engine
 
 ### Why modict?
 
@@ -42,7 +43,7 @@ isinstance(user,dict)                       # True (still a dict!)
 ### Core Capabilities
 - **Full dict inheritance** - All native dict methods work seamlessly.
 - **Attribute-style access** - `obj.key` and `obj['key']` both work
-- **Type annotations** - Optional type hints with runtime validation
+- **Type annotations** - Optional runtime validation with a powerful type validation and coercion system
 - **Recursive conversion**  
   - Explicit: `modict.convert()` / `.to_modict()` for full deep conversion  
   - Automatic: `auto_convert=True` (default) converts nested dicts to `modict` on first access
