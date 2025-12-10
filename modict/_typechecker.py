@@ -1568,7 +1568,11 @@ class Coercer:
         🔥 Coercion intelligente basée sur l'analyse du TypeChecker.
         """
         # Utiliser l'intelligence du TypeChecker pour analyser le type cible
-        if self.type_checker._is_special_form(target_hint):
+
+        # Forward references (strings) - à résoudre d'abord
+        if isinstance(target_hint, str):
+            return self._coerce_forward_ref(value, target_hint)
+        elif self.type_checker._is_special_form(target_hint):
             return self._coerce_special_form(value, target_hint)
         elif self.type_checker._is_generic_alias(target_hint):
             return self._coerce_generic_alias(value, target_hint)
@@ -1917,6 +1921,24 @@ class Coercer:
         
         # Sinon, accepter la valeur telle quelle (comme Any)
         return value
+
+    def _coerce_forward_ref(self, value: Any, target_hint: str) -> Any:
+        """
+        Coercion pour forward references (strings).
+        Résout la référence puis relance la coercion récursivement.
+        """
+        import inspect
+        frame = inspect.currentframe()
+        try:
+            # Résoudre la forward reference en type réel
+            resolved_hint = self.type_checker._resolve_forward_ref(target_hint, frame.f_back)
+            # Récursion : coercer avec le type résolu
+            return self.coerce(value, resolved_hint)
+        except TypeCheckError as e:
+            # Si on ne peut pas résoudre, on lève une erreur
+            raise CoercionError(f"Cannot resolve forward reference '{target_hint}': {e}")
+        finally:
+            del frame  # Éviter les cycles de référence
 
     def _fallback_coercion(self, value: Any, target_hint: Any) -> Any:
         """
