@@ -3,6 +3,7 @@
 
 # pkgmngr config file
 pkgmngr.toml
+.claude
 
 # pkgmngr snapshots
 snapshots/
