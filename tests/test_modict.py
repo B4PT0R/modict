@@ -37,8 +37,8 @@ def test_auto_convert_nested_structures():
     assert first_user.profile.city == "Paris"
 
     # set_nested should create missing levels
-    data.set_nested("settings.theme", "dark")
-    assert data.get_nested("settings.theme") == "dark"
+    data.set_nested("$.settings.theme", "dark")
+    assert data.get_nested("$.settings.theme") == "dark"
 
 
 def test_convert_and_unconvert_roundtrip():

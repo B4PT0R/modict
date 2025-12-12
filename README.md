@@ -44,11 +44,13 @@ isinstance(user,dict)                       # True (still a dict!)
 - **Full dict inheritance** - All native dict methods work seamlessly.
 - **Attribute-style access** - `obj.key` and `obj['key']` both work
 - **Type annotations** - Optional runtime validation with a powerful type validation and coercion system
-- **Recursive conversion**  
-  - Explicit: `modict.convert()` / `.to_modict()` for full deep conversion  
+- **Recursive conversion**
+  - Explicit: `modict.convert()` / `.to_modict()` for full deep conversion
   - Automatic: `auto_convert=True` (default) converts nested dicts to `modict` on first access
 - **JSON-first design** - Built-in JSON serialization/deserialization
-- **Path-based access** - Access nested structures with dot notation
+- **JSONPath support (RFC 9535)** - Unambiguous nested access with JSONPath strings, tuple paths, or Path objects
+  - Disambiguates array indices `[0]` from string keys `['0']`
+  - Path objects preserve container type metadata for round-trip conversion
 
 ### Advanced Features
 - **Computed properties** - Dynamic values with dependency tracking
@@ -101,7 +103,9 @@ print(user.age)         # 35
 print(user.tags)        # []
 ```
 
-### Nested Structures & Path Access
+### Nested Structures & JSONPath Access
+
+**modict** supports [JSONPath (RFC 9535)](https://www.rfc-editor.org/rfc/rfc9535.html) for unambiguous nested access:
 
 ```python
 # Automatic recursive conversion
@@ -113,15 +117,24 @@ data = modict({
     "settings": {"theme": "dark"}
 })
 
-# Path-based access
-print(data.get_nested("users.0.name"))           # "Alice"
-data.set_nested("users.0.profile.country", "France")
-print(data.has_nested("settings.theme"))         # True
+# JSONPath-based access (RFC 9535)
+print(data.get_nested("$.users[0].name"))              # "Alice"
+data.set_nested("$.users[0].profile.country", "France")
+print(data.has_nested("$.settings.theme"))             # True
 
-# Chained attribute access works too 
+# JSONPath disambiguates array indices from string keys
+data.set_nested("$.config['0'].value", "string key")   # String key '0'
+data.set_nested("$.items[0].value", "array index")     # Array index 0
+
+# Alternative: tuple paths (auto-converted to Path objects internally)
+print(data.get_nested(("users", 0, "name")))           # "Alice"
+
+# Chained attribute access also works
 # (Only if auto_convert=True (default) - see below about config)
-print(data.users[0].profile.city)                # "Paris"
+print(data.users[0].profile.city)                      # "Paris"
 ```
+
+**Path Objects**: Methods like `walk()` return `Path` objects that preserve container type information (mapping vs sequence), enabling proper round-trip conversion and disambiguation between integer keys and array indices.
 
 ## 💫 Advanced Features
 
@@ -186,16 +199,81 @@ overrides = {"db": {"port": 3306, "ssl": True}}
 network_config.merge(overrides)
 # Result: {"db": {"host": "localhost", "port": 3306, "ssl": True}}
 
-# Walking through nested structures
+# Walking through nested structures (returns Path objects)
 data = modict({"users": [{"name": "Alice"}, {"name": "Bob"}]})
 for path, value in data.walk():
     print(f"{path}: {value}")
-# Output:
-# users.0.name: Alice
-# users.1.name: Bob
+# Output (Path objects with JSONPath representation):
+# $.users[0].name: Alice
+# $.users[1].name: Bob
 
-# Flattened view
-flat = data.walked()  # {"users.0.name": "Alice", "users.1.name": "Bob"}
+# Flattened view (Dict[Path, Any])
+flat = data.walked()
+# {Path($.users[0].name): "Alice", Path($.users[1].name): "Bob"}
+# Path objects can be converted to strings: str(path) or path.to_jsonpath()
+```
+
+### JSONPath & Path Objects
+
+**modict** uses [JSONPath (RFC 9535)](https://www.rfc-editor.org/rfc/rfc9535.html) to provide unambiguous access to nested structures:
+
+```python
+from modict import modict
+
+data = modict({
+    "items": [{"id": 1}, {"id": 2}],
+    "config": {"0": "string key", 1: "int key"}
+})
+
+# Array index (integer in bracket notation)
+data.get_nested("$.items[0].id")        # 1 - accesses items[0]
+
+# String key (quoted in bracket notation)
+data.get_nested("$.config['0']")        # "string key" - accesses config['0']
+
+# Note: Integer keys in dicts cannot be represented in JSONPath
+# Use direct access: data.config[1] or data['config'][1]
+```
+
+**Path Objects**: All path-returning methods (`walk()`, `walked()`, `diff()`) now return `Path` objects instead of strings. Path objects:
+
+- Preserve container type information (mapping vs sequence)
+- Enable proper round-trip conversion
+- Support multiple representations:
+
+```python
+from modict._collections_utils import Path
+
+# Create Path objects
+path1 = Path.from_jsonpath("$.users[0].name")
+path2 = Path.from_tuple(('users', 0, 'name'))
+path3 = Path.normalize("$.users[0].name")  # Accepts string, tuple, or Path
+
+# Convert between representations
+print(path1.to_jsonpath())     # "$.users[0].name"
+print(path1.to_tuple())        # ('users', 0, 'name')
+print(str(path1))              # "$.users[0].name"
+
+# Path components preserve metadata
+for component in path1.components:
+    print(f"{component.value}: {component.container_type}")
+# Output:
+# users: mapping
+# 0: sequence
+# name: mapping
+```
+
+**Breaking Change**: In modict 0.2.0+, `walk()` and `walked()` return Path objects instead of strings. To convert back to strings:
+
+```python
+# Old behavior (modict < 0.2.0)
+for path_str, value in data.walk():
+    print(f"{path_str}: {value}")  # path_str was a string
+
+# New behavior (modict >= 0.2.0)
+for path, value in data.walk():
+    print(f"{path}: {value}")           # path is a Path object (str() is automatic)
+    print(f"{path.to_jsonpath()}: {value}")  # Explicit JSONPath string
 ```
 
 ## 🛠️ Configuration Options
@@ -429,16 +507,16 @@ This limitation rarely affects normal usage of modict as a data structure.
 ### Instance helpers
 - `.to_modict()`: deep-convert nested dicts into modict instances in place
 - `.to_dict()`: deep-convert modicts back to plain dicts (preserving sharing)
-- `.get_nested(path, default=MISSING)`: fetch nested value via dot/tuple path
-- `.set_nested(path, value)`: assign nested value, creating missing levels
-- `.del_nested(path)`: delete a nested key/path
-- `.pop_nested(path, default=MISSING)`: pop a nested key/path
-- `.has_nested(path)`: check existence of a nested path
+- `.get_nested(path, default=MISSING)`: fetch nested value via JSONPath string (`"$.a[0].b"`), tuple `('a', 0, 'b')`, or Path object
+- `.set_nested(path, value)`: assign nested value, creating missing levels (supports JSONPath, tuple, or Path)
+- `.del_nested(path)`: delete a nested key/path (supports JSONPath, tuple, or Path)
+- `.pop_nested(path, default=MISSING)`: pop a nested key/path (supports JSONPath, tuple, or Path)
+- `.has_nested(path)`: check existence of a nested path (supports JSONPath, tuple, or Path)
 - `.rename(mapping_or_kwargs)`: rename keys without touching values
 - `.exclude(*keys)`: return a new modict excluding given keys
 - `.extract(*keys)`: return a new modict with only given keys
-- `.walk(callback=None, filter=None, excluded=None)`: iterate leaf paths/values with optional transform/filter
-- `.walked(callback=None, filter=None)`: return dict of walked paths/values
+- `.walk(callback=None, filter=None, excluded=None)`: iterate leaf paths/values as `(Path, value)` tuples with optional transform/filter
+- `.walked(callback=None, filter=None)`: return `Dict[Path, Any]` of walked paths/values (Path objects as keys)
 - `.merge(mapping)`: deep-merge another mapping into self
 - `.diff(mapping)`: structural diff vs another mapping
 - `.deep_equals(mapping)`: deep equality check vs another mapping

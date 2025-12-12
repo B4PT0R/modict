@@ -2,16 +2,21 @@ from importlib import metadata
 
 from ._modict import modict
 from ._modict_meta import modictConfig, Field, Factory, Computed, Check
+from ._collections_utils import (
+    Path,
+    PathKey
+)
 from ._typechecker import (
     Coercer,
     CoercionError,
-    TypeCheckError,
-    TypeCheckException,
-    TypeCheckFailureError,
     TypeChecker,
+    TypeCheckException,
+    TypeCheckError,
+    TypeCheckFailureError,
     TypeMismatchError,
     check_type,
     coerce,
+    can_coerce,
     typechecked,
 )
 
@@ -30,8 +35,11 @@ __all__ = [
     "Factory",
     "Computed",
     "Check",
+    "Path",
+    "PathKey",
     "check_type",
     "coerce",
+    "can_coerce"
     "typechecked",
     "TypeChecker",
     "TypeCheckError",

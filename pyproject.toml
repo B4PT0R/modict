@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "modict"
-version = "0.1.4"
+version = "0.2.0"
 description = "A Python package named modict"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,7 +18,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "jsonpath-ng>=1.6.1",
+]
 
 [project.license]
 file = "LICENSE"
