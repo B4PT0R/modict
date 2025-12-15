@@ -1,10 +1,11 @@
 from importlib import metadata
 
 from ._modict import modict
-from ._modict_meta import modictConfig, Field, Factory, Computed, Check
+from ._modict_meta import modictConfig, Field, Factory, Computed, Validator, ModelValidator
 from ._collections_utils import (
     Path,
-    PathKey
+    PathKey,
+    MISSING,
 )
 from ._typechecker import (
     Coercer,
@@ -19,8 +20,12 @@ from ._typechecker import (
     can_coerce,
     typechecked,
 )
+from ._pydantic_interop import TypeCache
 
-__version__ = metadata.version("modict")
+try:
+    __version__ = metadata.version("modict")
+except metadata.PackageNotFoundError:
+    __version__ = "0.0.0"
 __title__ = "modict"
 __description__ = "A hybrid dict with model-like features (typed fields, validators, computed values)."
 __url__ = "https://github.com/B4PT0R/modict"
@@ -34,12 +39,15 @@ __all__ = [
     "Field",
     "Factory",
     "Computed",
-    "Check",
+    "Validator",
+    "ModelValidator",
     "Path",
     "PathKey",
+    "MISSING",
+    "TypeCache",
     "check_type",
     "coerce",
-    "can_coerce"
+    "can_coerce",
     "typechecked",
     "TypeChecker",
     "TypeCheckError",
