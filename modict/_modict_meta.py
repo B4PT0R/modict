@@ -1,34 +1,133 @@
 from collections.abc import ValuesView, ItemsView, KeysView
-from typing import  Optional,Union,Tuple, Set, Dict, List, Any, Type, Callable
+from typing import Optional, Union, Tuple, Set, Dict, List, Any, Type, Callable, Literal
 from types import FunctionType
 from ._collections_utils import MISSING
 from dataclasses import dataclass, field, fields, MISSING as DC_MISSING
 from typing import FrozenSet
+import warnings
+import inspect
 
 
 @dataclass
 class modictConfig:
     """Configuration for modict instances.
 
+    Follows Pydantic's ConfigDict semantics for consistency and familiarity.
+
     Attributes:
+       check_values: Controls whether modict enforces its validation/processing pipeline:
+           - 'auto' (default): enable when the class looks "model-like" (has hints/validators/config constraints)
+           - True: always enable the pipeline
+           - False: bypass validation entirely (dict-like behavior)
+
+       # modict-specific fields
        auto_convert: If True, automatically convert dicts found in nested mutable containers
                      (MutableMapping or MutableSequence) to modicts (on first access).
-       allow_extra: If True, allow keys not defined in __fields__.
-       strict: If True, enforce runtime type checking (raise on mismatch).
+       override_computed: If True, allow overriding/deleting computed fields at runtime
+                         and allow providing initial values for computed fields.
+       require_all: If True, require presence of all declared (non-computed) class fields
+                    at initialization time (annotation-only fields become required).
+       check_keys: Controls whether modict enforces key-level structural constraints:
+           - 'auto' (default): enabled when the model declares key constraints (extra/require_all/required/computed)
+           - True: always enforce key-level constraints
+           - False: bypass key-level constraints (dict-like keys)
+       evaluate_computed: If False, do not evaluate Computed fields on access; treat them
+                         as raw stored objects (pure storage mode).
+
+       # Pydantic-aligned fields (actively used)
+       extra: Controls handling of extra attributes ('allow', 'forbid', 'ignore').
+              - 'allow': Allow extra attributes and store them
+              - 'forbid': Raise error on extra attributes
+              - 'ignore': Silently ignore extra attributes
+       strict: Pydantic-like strict mode. If True, do not coerce values and require exact types.
        enforce_json: If True, enforce JSON-serializable values.
-       coerce: If True, coerce values to the expected type when possible.
+       frozen: If True, make instances immutable (faux-immutable).
+       validate_assignment: If True, validate values on assignment (Pydantic semantics).
+       validate_default: If True, validate default values at class definition time.
+       str_strip_whitespace: If True, strip whitespace from string values.
+       str_to_lower: If True, convert string values to lowercase.
+       str_to_upper: If True, convert string values to uppercase.
+       use_enum_values: If True, extract .value from Enum instances automatically.
+       allow_inf_nan: If False, disallow NaN/Infinity when enforce_json=True.
+       from_attributes: If True, allow building a modict from an object with attributes.
+       alias_generator: Optional callable (field_name -> alias string) applied at class creation.
+       json_encoders: Optional mapping of types to encoder callables used by model_dump_json().
+
+       # Pydantic-aligned fields (reserved for future use)
+       populate_by_name: If True, allow population by field name as well as aliases.
+       arbitrary_types_allowed: If True, allow arbitrary types (modict allows all types by default).
     """
 
+    check_values: bool | Literal["auto"] = "auto"
+
+    # modict-specific
     auto_convert: bool = True
-    allow_extra: bool = True
+    override_computed: bool = False
+    require_all: bool = False
+    check_keys: bool | Literal["auto"] = "auto"
+    evaluate_computed: bool = True
+
+    # Pydantic-aligned (actively used)
+    extra: Literal['allow', 'forbid', 'ignore'] = 'allow'
     strict: bool = False
     enforce_json: bool = False
-    coerce: bool = False
+    frozen: bool = False
+    validate_assignment: bool = False
+
+    # Pydantic-aligned (reserved for future use)
+    validate_default: bool = False
+    populate_by_name: bool = False
+    arbitrary_types_allowed: bool = False
+    str_strip_whitespace: bool = False
+    str_to_lower: bool = False
+    str_to_upper: bool = False
+    use_enum_values: bool = False
+    allow_inf_nan: bool = True
+    from_attributes: bool = False
+    alias_generator: Optional[Callable[[str], str]] = None
+    json_encoders: Optional[Dict[Type, Callable[[Any], Any]]] = None
 
     # champs passés explicitement à __init__
     _explicit: FrozenSet[str] = field(default_factory=frozenset, init=False, repr=False)
 
     def __init__(self, **kwargs):
+        # Deprecated: coerce -> strict
+        if 'coerce' in kwargs:
+            warnings.warn(
+                "The 'coerce' parameter is deprecated. Use Pydantic-like 'strict' instead:\n"
+                "  coerce=True  → strict=False (lax mode, coercion allowed)\n"
+                "  coerce=False → strict=True  (strict mode, no coercion)",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            coerce_value = kwargs.pop('coerce')
+            if 'strict' not in kwargs:
+                kwargs['strict'] = (not bool(coerce_value))
+
+        # Handle backward compatibility: allow_extra → extra
+        if 'allow_extra' in kwargs:
+            warnings.warn(
+                "The 'allow_extra' parameter is deprecated. Use 'extra' instead:\n"
+                "  allow_extra=True  → extra='allow'\n"
+                "  allow_extra=False → extra='forbid'",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            allow_extra_value = kwargs.pop('allow_extra')
+            # Only set 'extra' if not already provided
+            if 'extra' not in kwargs:
+                kwargs['extra'] = 'allow' if allow_extra_value else 'forbid'
+
+        if 'check_values' in kwargs:
+            cv = kwargs['check_values']
+            if cv not in (True, False, 'auto'):
+                raise TypeError("check_values must be True, False, or 'auto'")
+
+        if 'check_keys' in kwargs:
+            ck = kwargs['check_keys']
+            if ck not in (True, False, 'auto'):
+                raise TypeError("check_keys must be True, False, or 'auto'")
+
         # 1) garder la liste des clés explicitement fournies
         object.__setattr__(self, "_explicit", frozenset(kwargs.keys()))
 
@@ -59,6 +158,11 @@ class modictConfig:
         if name == "_explicit":
             object.__setattr__(self, name, value)
             return
+
+        if name == "check_values" and value not in (True, False, "auto"):
+            raise TypeError("check_values must be True, False, or 'auto'")
+        if name == "check_keys" and value not in (True, False, "auto"):
+            raise TypeError("check_keys must be True, False, or 'auto'")
 
         # On ne calcule la liste des champs init qu'une fois si tu veux optimiser,
         # mais même comme ça c'est ok.
@@ -175,7 +279,7 @@ class Factory:
     def __call__(self):
         return self.factory()
     
-class Check:
+class Validator:
     """
     Représente un checker qui valide/transforme une valeur de field.
     
@@ -184,16 +288,142 @@ class Check:
         field_name: Le nom du field à checker
     """
     
-    def __init__(self, func: Callable, field_name: str):
+    def __init__(self, func: Callable, field_name: str, *, mode: Literal["before", "after"] = "before"):
         self.func = func
         self.field_name = field_name
+        self.mode = mode
 
-    def __call__(self, instance, value):
+    @staticmethod
+    def _call_with_context(
+        func: Callable,
+        *,
+        instance: Any,
+        value: Any,
+        field_name: str,
+        cls: Any,
+        values: Any,
+        info: Any,
+    ) -> Any:
+        """
+        Best-effort adapter to call validators coming from different ecosystems.
+
+        Supports common signatures from:
+        - modict validators: (self, value)
+        - simple callables: (value)
+        - Pydantic validators: (cls, value), (cls, value, values), (cls, value, info)
+        """
+        # Build kwargs from accepted parameter names.
+        kwargs_by_name = {
+            "self": instance,
+            "instance": instance,
+            "cls": cls,
+            "value": value,
+            "v": value,
+            "values": values,
+            "data": values,
+            "info": info,
+            "field": field_name,
+            "field_name": field_name,
+        }
+
+        try:
+            sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            # Some callables (C-extensions, validators objects) don't expose signature.
+            # Try a few common fallbacks (including modict's convention).
+            for args in (
+                (instance, value),
+                (value,),
+                (cls, value),
+                (cls, value, values),
+                (cls, value, info),
+            ):
+                try:
+                    return func(*args)
+                except TypeError:
+                    continue
+            raise
+
+        kwargs = {}
+        positional_args: list[Any] = []
+        has_var_positional = False
+        has_var_keyword = False
+
+        for param in sig.parameters.values():
+            if param.kind is param.VAR_POSITIONAL:
+                has_var_positional = True
+                continue
+            if param.kind is param.VAR_KEYWORD:
+                has_var_keyword = True
+                continue
+
+            if param.name in kwargs_by_name:
+                if param.kind is param.POSITIONAL_ONLY:
+                    positional_args.append(kwargs_by_name[param.name])
+                else:
+                    kwargs[param.name] = kwargs_by_name[param.name]
+
+        if has_var_keyword:
+            for name, val in kwargs_by_name.items():
+                kwargs.setdefault(name, val)
+
+        try:
+            return func(*positional_args, **kwargs)
+        except TypeError:
+            # If we couldn't satisfy required parameters by name, fall back to common patterns.
+            for args in (
+                (instance, value),
+                (value,),
+                (cls, value),
+                (cls, value, values),
+                (cls, value, info),
+            ):
+                try:
+                    return func(*args)
+                except TypeError:
+                    continue
+            raise
+
+    def __call__(self, instance, value, *, values=None, cls=None, info=None):
         """Execute le checker sur la valeur."""
         try:
-            return self.func(instance, value)
+            effective_cls = cls if cls is not None else type(instance) if instance is not None else None
+            effective_values = values if values is not None else (dict(instance) if instance is not None else None)
+            return self._call_with_context(
+                self.func,
+                instance=instance,
+                value=value,
+                field_name=self.field_name,
+                cls=effective_cls,
+                values=effective_values,
+                info=info,
+            )
         except Exception as e:
             raise ValueError(f"Error in checker for field '{self.field_name}': {e}")
+
+class ModelValidator:
+    """Model-level validator (multi-field invariants)."""
+
+    def __init__(self, func: Callable, *, mode: Literal["before", "after"] = "after"):
+        self.func = func
+        self.mode = mode
+
+    def __call__(self, instance, *, values=None, cls=None, info=None):
+        try:
+            effective_cls = cls if cls is not None else type(instance) if instance is not None else None
+            effective_values = values if values is not None else (dict(instance) if instance is not None else None)
+            # Reuse Validator adapter for signature flexibility.
+            return Validator._call_with_context(
+                self.func,
+                instance=instance,
+                value=effective_values,
+                field_name="__model__",
+                cls=effective_cls,
+                values=effective_values,
+                info=info,
+            )
+        except Exception as e:
+            raise ValueError(f"Error in model validator: {e}")
 
 class Computed:
     """
@@ -261,14 +491,39 @@ class Computed:
         return bool(set(self.deps) & keys)
 
 class Field:
-    def __init__(self, hint=None, default=MISSING, checkers=None):
+    def __init__(
+        self,
+        hint=None,
+        default=MISSING,
+        validators=None,
+        required: Optional[bool] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+        aliases: Optional[Dict[str, Any]] = None,
+        _pydantic: Optional[Dict[str, Any]] = None,
+    ):
         self.default = default
         self.hint = hint
-        self.checkers = checkers or []  # Liste des Check objects
+        self.validators = validators or []  # List of Validator objects
+        # Required is opt-in: fields are only required when explicitly requested.
+        # This keeps modict dict-first (missing keys are allowed unless enforced).
+        self.required = bool(required) if required is not None else False
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("metadata must be a dict or None")
+        self.metadata = dict(metadata or {})
+        if constraints is not None and not isinstance(constraints, dict):
+            raise TypeError("constraints must be a dict or None")
+        self.constraints = dict(constraints or {})
+        if aliases is not None and not isinstance(aliases, dict):
+            raise TypeError("aliases must be a dict or None")
+        self.aliases = dict(aliases or {})
+        # Internal: bucket for Pydantic-only metadata preserved for round-trips.
+        # Not part of the public Field metadata contract and not used for schema export.
+        self._pydantic: Dict[str, Any] = dict(_pydantic or {})
 
-    def add_checker(self, checker):
-        """Ajoute un checker à la liste."""
-        self.checkers.append(checker)
+    def add_validator(self, validator):
+        """Add a validator to the field."""
+        self.validators.append(validator)
 
     def get_default(self):
         if isinstance(self.default, Factory):
@@ -286,7 +541,8 @@ def is_locally_defined_class(key: str, value: Any, name: str, dct: Dict[str, Any
     
     # Même logique que pour les fonctions
     expected_qualname = f"{name}.{key}"
-    return (value.__module__ == dct['__module__'] and
+    module = dct.get("__module__")
+    return (module is not None and value.__module__ == module and
             value.__qualname__ == expected_qualname)
 
 def is_locally_defined_descriptor(key: str, value: Any, name: str, dct: Dict[str, Any]) -> bool:
@@ -304,7 +560,8 @@ def is_locally_defined_descriptor(key: str, value: Any, name: str, dct: Dict[str
     
     # Vérifier si défini localement via qualname
     expected_qualname = f"{name}.{key}"
-    return (underlying_func.__module__ == dct['__module__'] and
+    module = dct.get("__module__")
+    return (module is not None and underlying_func.__module__ == module and
             underlying_func.__qualname__ == expected_qualname)
 
 def is_field(key: str, value: Any, name: str, bases: Tuple[Type, ...], dct: Dict[str, Any]) -> bool:
@@ -316,8 +573,12 @@ def is_field(key: str, value: Any, name: str, bases: Tuple[Type, ...], dct: Dict
     if hasattr(value, '_is_computed'):
         return True
     
-    # @modict.check() decorated functions are NOT fields - traitement spécial
-    if hasattr(value, '_is_check'):
+    # @modict.validator() decorated functions are NOT fields - traitement spécial
+    if hasattr(value, '_is_validator'):
+        return False
+
+    # @modict.model_validator() decorated functions are NOT fields
+    if hasattr(value, "_is_model_validator"):
         return False
     
     # Skip private/special attributes
@@ -345,11 +606,19 @@ class modictMeta(type):
     def __new__(mcls, name, bases, dct):
         fields = {}
         annotations = dct.get('__annotations__', {})
+        model_validators: list[ModelValidator] = []
 
         # Merge with fields from parent classes respecting mro order
         for base in reversed(bases):
             if hasattr(base,'__fields__'):
                 fields.update(base.__fields__)
+            if hasattr(base, "__model_validators__"):
+                model_validators.extend(list(base.__model_validators__))  # type: ignore[attr-defined]
+
+        # If class dict already provides model validators (e.g. interop), include them too
+        existing_model_validators = dct.get("__model_validators__")
+        if existing_model_validators:
+            model_validators.extend(list(existing_model_validators))
 
         # deal with annotations
         for key, hint in annotations.items():
@@ -358,13 +627,14 @@ class modictMeta(type):
                 if isinstance(value, FunctionType) and hasattr(value, '_is_computed'):
                     # @modict.computed() decorated method
                     cache = getattr(value, '_computed_cache', False)
-                    computed_obj = Computed(value, cache=cache)
-                    # Utiliser l'annotation de retour de la fonction si disponible
+                    deps = getattr(value, '_computed_deps', None)
+                    computed_obj = Computed(value, cache=cache, deps=deps)
+                    # Priorité : annotation de classe, puis annotation de retour de la fonction
                     func_return_hint = getattr(value, '__annotations__', {}).get('return')
-                    final_hint = func_return_hint if func_return_hint is not None else hint
-                    fields[key] = Field(default=computed_obj, hint=final_hint)
+                    final_hint = hint if hint is not None else func_return_hint
+                    fields[key] = Field(default=computed_obj, hint=final_hint, required=False)
                 elif not isinstance(value, Field):
-                    fields[key] = Field(default=value, hint=hint)
+                    fields[key] = Field(default=value, hint=hint, required=False)
                 else:
                     # already a field, we add the hint (unless already defined)
                     if value.hint is None:
@@ -373,7 +643,8 @@ class modictMeta(type):
                 dct.pop(key)
             else:
                 # Annotation without value -> Field(default=MISSING)
-                fields[key] = Field(default=MISSING, hint=hint)
+                # Annotation-only fields are not required by default in modict (dict-first).
+                fields[key] = Field(default=MISSING, hint=hint, required=False)
         
         # deal with namespace
         for key, value in list(dct.items()):
@@ -382,35 +653,46 @@ class modictMeta(type):
                     if isinstance(value, FunctionType) and hasattr(value, '_is_computed'):
                         # @modict.computed() decorated method
                         cache = getattr(value, '_computed_cache', False)
-                        computed_obj = Computed(value, cache=cache)
-                        # Utiliser l'annotation de retour de la fonction si disponible
+                        deps = getattr(value, '_computed_deps', None)
+                        computed_obj = Computed(value, cache=cache, deps=deps)
+                        # Pour les champs computed, utiliser l'annotation de retour de la fonction
                         func_return_hint = getattr(value, '__annotations__', {}).get('return')
-                        final_hint = func_return_hint if func_return_hint is not None else None
-                        fields[key] = Field(default=computed_obj, hint=final_hint)
+                        fields[key] = Field(default=computed_obj, hint=func_return_hint, required=False)
                     elif not isinstance(value, Field):
                         fields[key] = Field(default=value)
                     else:
                         fields[key] = value
                     dct.pop(key)
 
-        # Traitement des checkers
+        # Traitement des validators
         for key, value in list(dct.items()):
-            if isinstance(value, FunctionType) and hasattr(value, '_is_check'):
-                field_name = value._check_field
-                check_obj = Check(value, field_name)
+            if isinstance(value, FunctionType) and hasattr(value, '_is_validator'):
+                field_name = value._validator_field
+                validator_mode = getattr(value, "_validator_mode", "before")
+                check_obj = Validator(value, field_name, mode=validator_mode)
                 
                 # Field existe déjà (hérité ou déclaré dans cette classe) ?
                 if field_name in fields:
-                    fields[field_name].add_checker(check_obj)
+                    fields[field_name].add_validator(check_obj)
                 else:
                     # Créer un nouveau Field minimal pour le checker
-                    fields[field_name] = Field(checkers=[check_obj])
+                    fields[field_name] = Field(validators=[check_obj])
                 
                 # Retirer la fonction du namespace de la classe
                 dct.pop(key)
 
+        # Traitement des model validators
+        for key, value in list(dct.items()):
+            if isinstance(value, FunctionType) and hasattr(value, "_is_model_validator"):
+                mode = getattr(value, "_model_validator_mode", "after")
+                if mode not in ("before", "after"):
+                    mode = "after"
+                model_validators.append(ModelValidator(value, mode=mode))
+                dct.pop(key)
+
         # Store fields in __fields__
         dct['__fields__'] = fields
+        dct["__model_validators__"] = tuple(model_validators)
 
         # Setup _config using modictConfig with proper MRO merging
 
@@ -454,5 +736,58 @@ class modictMeta(type):
                 effective_config = modictConfig()
 
         dct['_config'] = effective_config
+
+        # Apply alias_generator (if any) to fields lacking explicit aliases.
+        alias_generator = getattr(effective_config, "alias_generator", None)
+        if callable(alias_generator):
+            for field_name, field_obj in fields.items():
+                # Skip computed fields: they are not meant to be populated from input.
+                if isinstance(field_obj.default, Computed):
+                    continue
+                # Respect explicit aliases provided on the Field.
+                if isinstance(getattr(field_obj, "aliases", None), dict) and field_obj.aliases:
+                    continue
+                try:
+                    alias = alias_generator(field_name)
+                except Exception as e:
+                    raise TypeError(
+                        f"alias_generator failed for field '{field_name}' in class '{name}': {e}"
+                    ) from e
+                if alias is None:
+                    continue
+                if not isinstance(alias, str) or not alias:
+                    raise TypeError(
+                        f"alias_generator must return a non-empty str for field '{field_name}' "
+                        f"in class '{name}', got {alias!r}"
+                    )
+                field_obj.aliases["alias"] = alias
+
+        # Validate default values if validate_default is enabled
+        if effective_config.validate_default:
+            from ._typechecker import check_type, TypeMismatchError
+
+            for field_name, field_obj in fields.items():
+                # Skip fields without defaults
+                if field_obj.default is MISSING:
+                    continue
+
+                # Skip Computed and Factory fields (they're dynamic)
+                if isinstance(field_obj.default, (Computed, Factory)):
+                    continue
+
+                # Skip fields without type hints
+                if field_obj.hint is None:
+                    continue
+
+                # Validate the default value against its type hint
+                try:
+                    check_type(field_obj.hint, field_obj.default)
+                except TypeMismatchError as e:
+                    raise TypeError(
+                        f"Invalid default value for field '{field_name}' in class '{name}': "
+                        f"expected {field_obj.hint}, got {type(field_obj.default).__name__} "
+                        f"({field_obj.default!r}). "
+                        f"Set validate_default=False to disable this check."
+                    ) from e
 
         return super().__new__(mcls, name, bases, dct)
