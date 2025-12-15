@@ -10,7 +10,7 @@ See RFC 9535: https://datatracker.ietf.org/doc/html/rfc9535
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Literal, Union, Optional, Any, Iterator, Iterable, List, Callable, Type, Dict
+from typing import Tuple, Union, Optional, Any, Iterator, Iterable, List, Callable, Type, Dict
 from jsonpath_ng import parse as jsonpath_parse
 from jsonpath_ng.jsonpath import Index, Fields, Root, Child
 from ._types import (
@@ -34,68 +34,59 @@ class PathKey:
 
     Attributes:
         value: The key (str) or index (int)
-        container_type: Origin container type - "sequence" for list-like, "mapping" for dict-like, "unknown" when ambiguous
+        container_class: Origin container class (e.g., dict, list, UserDict). None when ambiguous.
 
     Examples:
-        >>> PathKey(0, "sequence")  # $.a[0]
-        PathKey(value=0, container_type='sequence')
-        >>> PathKey('0', "mapping")  # $.a['0']
-        PathKey(value='0', container_type='mapping')
-        >>> PathKey('name', "mapping")  # $.a.name
-        PathKey(value='name', container_type='mapping')
+        >>> PathKey(0, list)  # $.a[0]
+        PathKey(value=0, container_class=<class 'list'>)
+        >>> PathKey('0', dict)  # $.a['0']
+        PathKey(value='0', container_class=<class 'dict'>)
+        >>> PathKey('name', dict)  # $.a.name
+        PathKey(value='name', container_class=<class 'dict'>)
     """
     value: Key
-    container_type: Literal["mapping", "sequence","unknown"]
+    container_class: Optional[Type[Container]] = None
 
     def __post_init__(self):
         """Validate component type consistency."""
         if not isinstance(self.value, (str, int)):
             raise ValueError(f"Component value must be str or int, got {type(self.value).__name__}")
-        if self.container_type == "sequence" and not isinstance(self.value, int):
-            raise ValueError(f"Index components must have int values, got {type(self.value).__name__}")
-        if self.container_type not in ("mapping", "sequence", "unknown"):
-            raise ValueError(f"Invalid component type: {self.container_type}")
+        if self.container_class is not None:
+            # Validate that it's a type and implements Mapping or Sequence
+            if not isinstance(self.container_class, type):
+                raise ValueError(f"container_class must be a type, got {type(self.container_class).__name__}")
+            # Check if it's a Sequence type and value is not int
+            if issubclass(self.container_class, Sequence) and not isinstance(self.value, int):
+                raise ValueError(f"Sequence container requires int index, got {type(self.value).__name__}")
         
     @classmethod
     def from_key(cls, key: Key, container:Optional[Container]=None) -> "PathKey":
-        """Create PathKey from key and container type.
+        """Create PathKey from key and container instance.
 
         Args:
            key: The key/index value
-           container: Optional container instance used to disambiguate mapping vs sequence keys
+           container: Optional container instance used to capture the exact container class
         Returns:
-           PathKey instance
+           PathKey instance with container_class set to type(container) if provided
         """
         if not isinstance(key, (str, int)):
             raise ValueError(f"Component value must be str or int, got {type(key).__name__}")
-        if container and not isinstance(container, (Mapping, Sequence)):
+        if container is not None and not isinstance(container, (Mapping, Sequence)):
             raise ValueError(f"Container must implement the Mapping or Sequence protocol (see collections.abc), got {type(container).__name__}")
-        
-        if isinstance(key,str):
-            if container and not isinstance(container, Mapping):
-                # incoherent
-                raise ValueError(f"Incoherent container type {type(container)} for key {key}")
-            #must be a mapping
-            container_type="mapping"
-        if isinstance(key,int):
-            if key<0:
-                if container and not isinstance(container, Sequence):
-                    # incoherent
-                    raise ValueError(f"Incoherent container type {type(container)} for key {key}")
-                #must be a sequence
-                container_type="sequence"
-            else:
-                # we can't be sure from the key alone (mappings may have int keys)
-                # we rely on the passed container type to decide
-                if container and isinstance(container, Sequence):
-                    container_type="sequence"
-                elif container and isinstance(container, Mapping):
-                    container_type="mapping"
-                else:
-                    # no container provided, we can't decide
-                    container_type="unknown"
 
-        return cls(value=key,container_type=container_type)
+        # Validate key/container coherence
+        if isinstance(key, str):
+            if container is not None and not isinstance(container, Mapping):
+                raise ValueError(f"Incoherent container type {type(container)} for string key {key}")
+        elif isinstance(key, int) and key < 0:
+            # Negative indices only work with sequences
+            if container is not None and not isinstance(container, Sequence):
+                raise ValueError(f"Incoherent container type {type(container)} for negative index {key}")
+
+        # Capture the exact container class if provided
+        container_class = type(container) if container is not None else None
+
+        return cls(value=key, container_class=container_class)
     
     def resolve(self,container:Container)->Any:
         """Resolve the key in the container."""
@@ -103,14 +94,15 @@ class PathKey:
             raise TypeError(f"Cannot resolve path in {type(container).__name__}\nContainer must be a Mapping or Sequence, got {type(container).__name__}")
 
         if isinstance(container, Mapping):
-            if self.container_type == "sequence":
+            # Check type mismatch only if container_class is known and it's a Sequence type
+            if self.container_class is not None and issubclass(self.container_class, Sequence):
                 raise TypeError(f"Cannot resolve path in {type(container).__name__}. Container type mismatch. Expected Sequence, got Mapping.")
             if not has_key(container, self.value):
                 raise KeyError(f"Cannot resolve path in {type(container).__name__}. Key {self.value!r} not found in container.")
             return container[self.value]
 
         # Sequence case
-        if self.container_type == "mapping":
+        if self.container_class is not None and issubclass(self.container_class, Mapping):
             raise TypeError(f"Cannot resolve path in {type(container).__name__}. Container type mismatch. Expected Mapping, got Sequence.")
         if not isinstance(self.value, int):
             raise TypeError(f"Cannot resolve path in {type(container).__name__}. Sequence indices must be int, got {type(self.value).__name__}")
@@ -118,9 +110,10 @@ class PathKey:
             return container[self.value]
         except IndexError as e:
             raise IndexError(f"Cannot resolve path in {type(container).__name__}. Index {self.value!r} out of range for container of length {len(container)}.") from e
-    
+
     def __repr__(self):
-        return f"PathKey({self.value!r}, container_type={self.container_type!r})"
+        class_name = self.container_class.__name__ if self.container_class is not None else None
+        return f"PathKey({self.value!r}, container_class={class_name})"
 
     def __str__(self):
         return f"{self.value!r}"
@@ -129,11 +122,15 @@ class PathKey:
         """Return True if this PathKey can be resolved in obj without errors."""
         if not isinstance(obj, (Mapping, Sequence)):
             return False
-        if self.container_type == "mapping":
-            return isinstance(obj, Mapping) and has_key(obj, self.value)
-        if self.container_type == "sequence":
-            return isinstance(obj, Sequence) and isinstance(self.value, int) and 0 <= self.value < len(obj)
-        # unknown → allow either, but the key/index must exist
+
+        # If container_class is specified, check compatibility
+        if self.container_class is not None:
+            if issubclass(self.container_class, Mapping):
+                return isinstance(obj, Mapping) and has_key(obj, self.value)
+            elif issubclass(self.container_class, Sequence):
+                return isinstance(obj, Sequence) and isinstance(self.value, int) and 0 <= self.value < len(obj)
+
+        # No container_class (ambiguous) → allow either, but the key/index must exist
         if isinstance(obj, Mapping) and has_key(obj, self.value):
             return True
         if isinstance(obj, Sequence) and isinstance(self.value, int) and 0 <= self.value < len(obj):
@@ -150,15 +147,15 @@ class Path:
     Examples:
         >>> spec = Path(
         ...     components=(
-        ...         PathKey('a', 'mapping'),
-        ...         PathKey(0, 'sequence'),
-        ...         PathKey('b', 'mapping')
+        ...         PathKey('a', dict),
+        ...         PathKey(0, list),
+        ...         PathKey('b', dict)
         ...     ),
         ... )
         >>> spec.to_tuple()
         ('a',0,'b')
-        >>> spec.components[0].container_type
-        'mapping'
+        >>> spec.components[0].container_class
+        <class 'dict'>
     """
 
     components:Tuple[PathKey, ...]=()
@@ -170,8 +167,8 @@ class Path:
 
     @property
     def is_ambiguous(self):
-        """Return True if the path is ambiguous (contains unknown components)."""
-        return any(c.container_type == "unknown" for c in self.components)
+        """Return True if the path is ambiguous (contains components with unknown container class)."""
+        return any(c.container_class is None for c in self.components)
 
     def to_jsonpath(self) -> str:
         """Convert the Path to a JSONPath string."""
@@ -217,14 +214,14 @@ class Path:
             >>> spec = parse_jsonpath('$.users[0].name')
             >>> spec.to_tuple()
             ('users', 0, 'name')
-            >>> spec.components[1].container_type
-            'sequence'
+            >>> spec.components[1].container_class
+            <class 'list'>
 
             >>> spec = parse_jsonpath("$.config['0'].value")
             >>> spec.to_tuple()
             ('config', '0', 'value')
-            >>> spec.components[1].container_type
-            'mapping'
+            >>> spec.components[1].container_class
+            <class 'dict'>
 
         Note:
             Legacy dot-notation paths (e.g., 'a.0.b') will raise a ValueError
@@ -262,18 +259,20 @@ class Path:
                 extract_components(node.right, components_list)
             elif isinstance(node, Fields):
                 # Field access (e.g., 'name' in $.name)
+                # Use dict as the default mapping type when parsing JSONPath
                 for field in node.fields:
-                    components_list.append(PathKey(field, "mapping"))
+                    components_list.append(PathKey(field, dict))
             elif isinstance(node, Index):
                 # Array index (e.g., [0] or [-1])
-                components_list.append(PathKey(node.index, "sequence"))
+                # Use list as the default sequence type when parsing JSONPath
+                components_list.append(PathKey(node.index, list))
             else:
                 # Other node types - attempt to extract fields/index if available
                 if hasattr(node, 'fields'):
                     for field in node.fields:
-                        components_list.append(PathKey(field, "mapping"))
+                        components_list.append(PathKey(field, dict))
                 elif hasattr(node, 'index'):
-                    components_list.append(PathKey(node.index, "sequence"))
+                    components_list.append(PathKey(node.index, list))
                 else:
                     raise ValueError(f"Unsupported JSONPath component: {node!r}")
 
@@ -372,13 +371,15 @@ class Path:
         return self.to_jsonpath()==other.to_jsonpath()
 
     def __hash__(self) -> int:
-        return hash(tuple((c.value, c.container_type) for c in self.components))
+        # Hash based on JSONPath representation (container_class info is lost, but that's OK for hashing)
+        return hash(self.to_jsonpath())
 
     def __lt__(self, other: 'Path') -> bool:
         if not isinstance(other, Path):
             return NotImplemented
-        return tuple((c.value, c.container_type) for c in self.components) < tuple(
-            (c.value, c.container_type) for c in other.components
+        # Compare based on values and container class names
+        return tuple((c.value, c.container_class.__name__ if c.container_class else None) for c in self.components) < tuple(
+            (c.value, c.container_class.__name__ if c.container_class else None) for c in other.components
         )
 
     def to_tuple(self) -> Tuple[Key, ...]:
@@ -463,27 +464,38 @@ class Path:
         for i in range(min_len):
             candidate = paths[0].components[i]
             if all(cls._component_compatible(candidate, p.components[i]) for p in paths[1:]):
-                # keep the most specific container_type if any path provides it
-                types = {p.components[i].container_type for p in paths}
-                chosen_type = candidate.container_type if candidate.container_type != "unknown" else (types - {"unknown"}).pop() if len(types - {"unknown"})==1 else candidate.container_type
-                prefix_components.append(PathKey(candidate.value, chosen_type))
+                # Keep the most specific container_class if any path provides it
+                # If multiple paths have different classes, prefer candidate's class
+                classes = {p.components[i].container_class for p in paths if p.components[i].container_class is not None}
+                if len(classes) == 1:
+                    chosen_class = classes.pop()
+                elif candidate.container_class is not None:
+                    chosen_class = candidate.container_class
+                else:
+                    chosen_class = None
+                prefix_components.append(PathKey(candidate.value, chosen_class))
             else:
                 break
         return Path(components=tuple(prefix_components))
 
     @classmethod
     def from_tuple(cls, keys: Tuple[Key, ...]) -> 'Path':
-        """Create Path from legacy tuple of keys/indices."""
+        """Create Path from legacy tuple of keys/indices.
+
+        Note: When creating from tuple, container classes are ambiguous.
+        String keys default to dict, integer keys have no default (None).
+        """
         components=[]
         for key in keys:
             if not isinstance(key, (str, int)):
                 raise ValueError(f"Invalid key type: {type(key)}")
-            if isinstance(key,str):
-                components.append(PathKey(key, 'mapping'))
-            elif isinstance(key,int):
-                # mappings or sequences may have int keys
-                # so the type remains unknown
-                components.append(PathKey(key, 'unknown'))
+            if isinstance(key, str):
+                # String keys → must be a dict-like mapping
+                components.append(PathKey(key, dict))
+            elif isinstance(key, int):
+                # Integer keys are ambiguous (could be list index or dict key)
+                # Set container_class to None
+                components.append(PathKey(key, None))
         return cls(components=tuple(components))
 
     @classmethod
@@ -492,35 +504,44 @@ class Path:
         return cls.from_tuple(tuple(keys))
 
     def with_container_types(self, root: Container) -> 'Path':
-        """Return a new Path with container_type filled from a concrete root."""
+        """Return a new Path with container_class filled from actual container instances.
+
+        Walks the path through the root container and captures the exact type of each container.
+        """
         current = root
         components: list[PathKey] = []
         for component in self.components:
             if isinstance(current, Mapping):
                 if not has_key(current, component.value):
                     raise KeyError(f"Key {component.value!r} not found while walking {self}")
-                current = current[component.value]
-                components.append(PathKey(component.value, "mapping"))
+                next_value = current[component.value]
+                # Capture the exact type of the current container
+                components.append(PathKey(component.value, type(current)))
+                current = next_value
             elif isinstance(current, Sequence):
                 if not isinstance(component.value, int):
                     raise TypeError(f"Expected integer index on sequence while walking {self}")
                 try:
-                    current = current[component.value]
+                    next_value = current[component.value]
                 except IndexError as e:
                     raise IndexError(f"Index {component.value} out of range while walking {self}") from e
-                components.append(PathKey(component.value, "sequence"))
+                # Capture the exact type of the current container
+                components.append(PathKey(component.value, type(current)))
+                current = next_value
             else:
                 raise TypeError(f"Cannot walk non-container object of type {type(current).__name__}")
         return Path(components=tuple(components))
 
     @staticmethod
     def _component_compatible(left: PathKey, right: PathKey) -> bool:
-        """Return True if components match, treating unknown as a wildcard."""
+        """Return True if components match, treating None container_class as a wildcard."""
         if left.value != right.value:
             return False
-        if "unknown" in (left.container_type, right.container_type):
+        # If either has None container_class, treat as compatible
+        if left.container_class is None or right.container_class is None:
             return True
-        return left.container_type == right.container_type
+        # Both have container_class specified - they must match
+        return left.container_class == right.container_class
 
 
 def ensure_absolute(jsonpath: str) -> str:
