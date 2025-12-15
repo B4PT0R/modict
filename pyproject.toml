@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "modict"
-version = "0.2.0"
+version = "0.3.0"
 description = "A Python package named modict"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,9 +36,6 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/B4PT0R/modict"
-
-[project.scripts]
-modict = "modict.__main__:main"
 
 [tool.setuptools.packages.find]
 where = [

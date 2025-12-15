@@ -1,10 +1,33 @@
-# Migration Guide: modict 0.2.0
+# Migration Guide: modict 0.3.0
 
 ## Overview
 
-modict 0.2.0 introduces **JSONPath (RFC 9535)** support for unambiguous nested structure access. This guide will help you migrate your code to the new API.
+modict 0.3.0 builds on 0.2.x and introduces new *opt-in* “model-like” invariants and
+performance knobs, plus stronger Pydantic interoperability for round-trips.
+
+This guide will help you migrate your code to the new API.
 
 ## What Changed
+
+### 0.3.0: Structural invariants are explicit (opt-in)
+
+`modict` stays dict-first: annotations and class defaults do not automatically make keys “required invariants”.
+
+New knobs:
+- `Field(required=True)` (opt-in) marks a field as structurally required (presence enforced).
+- `_config.require_all=True` enforces presence of all declared fields (including computed).
+- `_config.check_keys` controls whether structural key constraints are enforced (`"auto"` / `True` / `False`).
+
+If you previously relied on “missing annotated fields should raise” behavior, switch to:
+```python
+class M(modict):
+    x: int = modict.field(required=True)
+```
+
+### 0.3.0: Computed safety and performance modes
+
+- `_config.override_computed=False` (default) prevents accidental overriding/deleting computed fields.
+- `_config.evaluate_computed=False` allows treating computed values as raw `Computed` objects (no evaluation).
 
 ### 1. Path Format (Non-Breaking)
 
@@ -168,21 +191,61 @@ from modict._collections_utils import Path
 
 path = Path.from_jsonpath("$.users[0].profile.city")
 
-# Access components with metadata
+# Access components with exact container class metadata
 for comp in path.components:
-    print(f"{comp.value} ({comp.container_type})")
+    class_name = comp.container_class.__name__ if comp.container_class else "ambiguous"
+    print(f"{comp.value} ({class_name})")
 # Output:
-# users (mapping)
-# 0 (sequence)
-# profile (mapping)
-# city (mapping)
+# users (dict)
+# 0 (list)
+# profile (dict)
+# city (dict)
 
 # Convert between formats
 print(path.to_jsonpath())  # "$.users[0].profile.city"
 print(path.to_tuple())     # ('users', 0, 'profile', 'city')
 ```
 
-### 3. Path Normalization
+### 3. Container Type Preservation
+
+Path components now store the **exact container class** instead of generic type strings:
+
+**Before**: `container_type` was a string literal (`"mapping"`, `"sequence"`, `"unknown"`)
+```python
+# modict < 0.2.0
+component.container_type  # "mapping" or "sequence" or "unknown"
+```
+
+**After**: `container_class` stores the actual Python class
+```python
+# modict >= 0.2.0
+component.container_class  # dict, list, OrderedDict, UserDict, etc., or None
+```
+
+**Benefits**:
+- `walk()` → `unwalk()` now preserves exact container types (OrderedDict, UserDict, etc.)
+- Better type information for introspection
+- No performance impact (hash/equality still use JSONPath strings)
+
+**Example**:
+```python
+from collections import OrderedDict, UserList
+
+# Original structure with custom types
+data = {
+    'config': OrderedDict([('x', 1), ('y', 2)]),
+    'items': UserList([10, 20, 30])
+}
+
+# Walk and unwalk preserve exact types
+walked_data = walked(data)
+reconstructed = unwalk(walked_data)
+
+type(reconstructed['config'])  # OrderedDict (preserved!)
+type(reconstructed['items'])   # UserList (preserved!)
+```
+
+### 4. Path Normalization
 
 ```python
 from modict._collections_utils import Path
@@ -290,8 +353,188 @@ print("✓ Path conversions work")
 print("\n✅ Migration successful!")
 ```
 
+## Configuration Migration: Pydantic-Aligned Semantics
+
+### What Changed
+
+The `allow_extra` boolean parameter has been replaced with the `extra` parameter that accepts three string values, following Pydantic's ConfigDict conventions.
+
+| Old Syntax | New Syntax | Behavior |
+|------------|------------|----------|
+| `allow_extra=True` | `extra='allow'` | Allow and store extra attributes (default) |
+| `allow_extra=False` | `extra='forbid'` | Raise KeyError on extra attributes |
+| N/A | `extra='ignore'` | Silently ignore extra attributes (new!) |
+
+### Migration Examples
+
+**Before (Deprecated)**:
+```python
+from modict import modict
+
+class MyModel(modict):
+    _config = modict.config(
+        allow_extra=False,  # ⚠️ Deprecated
+        strict=True
+    )
+    name: str
+    age: int
+```
+
+**After (Recommended)**:
+```python
+from modict import modict
+
+class MyModel(modict):
+    _config = modict.config(
+        extra='forbid',  # ✅ Pydantic-aligned
+        strict=True
+    )
+    name: str
+    age: int
+```
+
+### New Feature: `extra='ignore'` Mode
+
+The new `'ignore'` mode silently discards extra attributes:
+
+```python
+class IgnoreExtraModel(modict):
+    _config = modict.config(extra='ignore')
+    name: str
+
+model = IgnoreExtraModel(name="Alice", unknown="ignored")
+print(model)  # {'name': 'Alice'}
+print('unknown' in model)  # False - silently ignored
+```
+
+### Backward Compatibility
+
+**The old `allow_extra` parameter still works** but emits a `DeprecationWarning`:
+
+```python
+# This still works but triggers a warning
+config = modict.config(allow_extra=False)
+# ⚠️  DeprecationWarning: Use extra='forbid' instead
+```
+
+Conversion rules:
+- `allow_extra=True` → `extra='allow'`
+- `allow_extra=False` → `extra='forbid'`
+- If both are provided, `extra` takes precedence
+
+### Additional Pydantic-Aligned Fields
+
+New configuration fields have been added:
+
+```python
+class FullConfig(modict):
+    _config = modict.config(
+        # modict-specific
+        auto_convert=True,
+
+        # Pydantic-aligned (actively used)
+        extra='allow',
+        strict=False,
+        coerce=False,
+        enforce_json=False,
+        frozen=False,
+        validate_default=False,
+        str_strip_whitespace=False,
+        str_to_lower=False,
+        str_to_upper=False,
+        use_enum_values=False,
+
+        # Pydantic-aligned (reserved for future use)
+        validate_assignment=False,
+        populate_by_name=False,
+        arbitrary_types_allowed=False,
+    )
+```
+
+#### New Feature: `frozen` - Immutability
+
+Make modict instances immutable after creation:
+
+```python
+class FrozenConfig(modict):
+    _config = modict.config(frozen=True)
+    name: str
+
+config = FrozenConfig(name="Alice")
+# config.name = "Bob"  # ❌ TypeError: Cannot assign to field 'name': instance is frozen
+```
+
+#### New Feature: `validate_default` - Validate Defaults at Class Definition
+
+Validate that default values match their type annotations at class definition time:
+
+```python
+class Config(modict):
+    _config = modict.config(validate_default=True)
+    name: str = "Alice"  # ✅ Valid
+    # age: int = "wrong"  # ❌ TypeError at class definition
+
+config = Config()
+assert config.name == "Alice"
+```
+
+This catches type errors early rather than at runtime.
+
+#### New Feature: String Transformations
+
+Apply automatic transformations to string values:
+
+```python
+class EmailConfig(modict):
+    _config = modict.config(
+        str_strip_whitespace=True,
+        str_to_lower=True
+    )
+    email: str
+
+config = EmailConfig(email="  ALICE@EXAMPLE.COM  ")
+assert config.email == "alice@example.com"  # Stripped and lowercased
+```
+
+Available transformations:
+- `str_strip_whitespace`: Remove leading/trailing whitespace
+- `str_to_lower`: Convert to lowercase
+- `str_to_upper`: Convert to uppercase
+
+**Note**: `str_to_lower` takes precedence over `str_to_upper` if both are enabled.
+
+#### New Feature: `use_enum_values` - Automatic Enum Value Extraction
+
+Automatically extract `.value` from Enum instances:
+
+```python
+from enum import Enum
+
+class Color(Enum):
+    RED = "red"
+    GREEN = "green"
+    BLUE = "blue"
+
+class Config(modict):
+    _config = modict.config(use_enum_values=True)
+    color: str
+
+config = Config(color=Color.RED)
+assert config.color == "red"  # Value extracted automatically
+assert not isinstance(config.color, Color)  # Just the string value
+```
+
+### Configuration Migration Checklist
+
+- [ ] Replace `allow_extra=True` with `extra='allow'`
+- [ ] Replace `allow_extra=False` with `extra='forbid'`
+- [ ] Consider using `extra='ignore'` for silently discarding unknown fields
+- [ ] Update tests to use the new parameter names
+- [ ] Run your test suite (273 tests pass with new system)
+
 ## Need Help?
 
 - Check the updated [README.md](README.md) for examples
+- See [examples/pydantic_config_semantics.py](examples/pydantic_config_semantics.py) for configuration examples
 - File an issue at [github.com/B4PT0R/modict/issues](https://github.com/B4PT0R/modict/issues)
 - See [RFC 9535](https://www.rfc-editor.org/rfc/rfc9535.html) for JSONPath specification
