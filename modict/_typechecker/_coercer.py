@@ -191,7 +191,7 @@ class Coercer:
                 # Pour les ABC, essayer de créer le type d'origine
                 try:
                     converted = origin(value)
-                except:
+                except Exception:
                     converted = list(value)  # Fallback vers list
         else:
             raise CoercionError(f"Cannot coerce {type(value)} to sequence")
@@ -214,7 +214,7 @@ class Coercer:
             else:
                 try:
                     return origin(coerced_elements)
-                except:
+                except Exception:
                     return coerced_elements
         
         return converted
@@ -255,7 +255,7 @@ class Coercer:
         else:
             try:
                 return origin(converted)
-            except:
+            except Exception:
                 return converted
 
     def _coerce_set_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
@@ -291,7 +291,7 @@ class Coercer:
         else:
             try:
                 return origin(converted)
-            except:
+            except Exception:
                 return converted
 
     def _coerce_tuple_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
@@ -351,7 +351,7 @@ class Coercer:
                 return origin(value)
             else:
                 return origin([value])  # Wrap en liste si pas iterable
-        except:
+        except Exception:
             raise CoercionError(f"Cannot coerce {type(value)} to {origin}")
 
     def _coerce_basic_type(self, value: Any, target_hint: Any) -> Any:
@@ -367,7 +367,7 @@ class Coercer:
                 result = strategy(value)
                 if result is not None:  # Strategy peut retourner None si impossible
                     return result
-            except:
+            except Exception:
                 pass
         
         # Fallback vers stratégies plus génériques
@@ -419,7 +419,7 @@ class Coercer:
         if isinstance(target_hint, type):
             try:
                 return target_hint(value)
-            except:
+            except Exception:
                 pass
         
         raise CoercionError(f"No coercion strategy available for {target_hint}")
@@ -516,7 +516,7 @@ class Coercer:
             try:
                 # Tentative de construction directe
                 return target_hint(value)
-            except:
+            except Exception:
                 raise CoercionError(f"Cannot coerce {type(value)} to {target_hint}")
         
         raise CoercionError(f"Cannot coerce {type(value)} to {target_hint}")
