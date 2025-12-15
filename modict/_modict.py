@@ -1,5 +1,6 @@
 from collections.abc import Mapping
-from typing import Optional,Union, Tuple, Set, Dict, List, Any, Callable
+from types import ClassMethodDescriptorType
+from typing import Optional, Union, Tuple, Set, Dict, List, Any, Callable, Type
 from ._typechecker import check_type, TypeMismatchError, coerce
 from ._modict_meta import modictMeta, Factory, Computed, modictItemsView,modictKeysView,modictValuesView, modictConfig
 from ._collections_utils import (
@@ -26,7 +27,9 @@ from ._collections_utils import (
 )
 import copy
 import json
-
+import importlib
+from typing import Literal
+from collections.abc import MutableMapping, MutableSequence
 
 class modict(dict, metaclass=modictMeta):
     """A dict with additional capabilities.
@@ -89,15 +92,22 @@ class modict(dict, metaclass=modictMeta):
 
         Usage:
             class MyModict(modict):
-                _config = modict.config(enforce_json=True, allow_extra=False)
+                _config = modict.config(enforce_json=True, extra='forbid')
                 name: str
                 age: int
 
         Args:
-            allow_extra: Allow keys not defined in __fields__
-            strict: Enable runtime type checking
+            check_values: Enable/disable modict's validation pipeline (True/False/'auto')
+            auto_convert: Automatically convert nested dicts to modicts
+            extra: Control extra attributes ('allow', 'forbid', 'ignore')
+            strict: Pydantic-like strict mode (no coercion)
             enforce_json: Ensure all values are JSON-serializable
-            coerce: Enable automatic type coercion
+            frozen: Make instances immutable
+            validate_assignment: Validate values on assignment
+
+            # Reserved for future use:
+            validate_default, populate_by_name, arbitrary_types_allowed,
+            str_strip_whitespace, str_to_lower, str_to_upper, use_enum_values
 
         Returns:
             modictConfig instance
@@ -105,28 +115,84 @@ class modict(dict, metaclass=modictMeta):
         return modictConfig(**kwargs)
 
     @classmethod
-    def check(cls, field_name):
+    def field(
+        cls,
+        *,
+        default=MISSING,
+        hint=None,
+        required: Optional[bool] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        constraints: Optional[Dict[str, Any]] = None,
+        aliases: Optional[Dict[str, Any]] = None,
+        validators=None,
+    ):
+        """Convenience factory for Field(...) without importing Field directly.
+
+        Note: internal interop buckets like `Field._pydantic` are intentionally not
+        exposed via this helper.
+        """
+        from ._modict_meta import Field as ModictField
+        return ModictField(
+            default=default,
+            hint=hint,
+            required=required,
+            metadata=metadata,
+            constraints=constraints,
+            aliases=aliases,
+            validators=validators,
+        )
+
+    @classmethod
+    def validator(cls, field_name, *, mode: Literal["before", "after"] = "before"):
         """Decorator to create field validators/transformers.
 
         Args:
             field_name: The name of the field to validate/transform
+            mode: Validator mode, mainly for Pydantic interop:
+                - "before": run before coercion/type-checking (default, current modict behavior)
+                - "after": run after coercion/type-checking (reserved for future use)
 
         Returns:
-            A decorator function that marks methods as field checkers
+            A decorator function that marks methods as field validators
 
         Examples:
             >>> class User(modict):
             ...     email: str
             ...
-            ...     @modict.check('email')
+            ...     @modict.validator('email')
             ...     def validate_email(self, value):
             ...         return value.lower().strip()
         """
         def decorator(f):
-            f._is_check = True
-            f._check_field = field_name
+            f._is_validator = True
+            f._validator_field = field_name
+            f._validator_mode = mode
             return f
         return decorator
+
+    @classmethod
+    def model_validator(cls, func=None, *, mode: Literal["before", "after"] = "after"):
+        """Decorator to create model-level validators (multi-field invariants).
+
+        Model validators run in two phases:
+        - mode="before": runs before field coercion/type checking
+        - mode="after": runs after field validation (Pydantic-like)
+
+        The decorated callable may:
+        - mutate the instance in place and return None
+        - return a Mapping of updates (applied to the instance)
+        - return the instance itself (ignored)
+        """
+        if func is None:
+            def decorator(f):
+                f._is_model_validator = True
+                f._model_validator_mode = mode
+                return f
+            return decorator
+        else:
+            func._is_model_validator = True
+            func._model_validator_mode = mode
+            return func
 
     @classmethod
     def computed(cls, func=None, *, cache=False, deps=None):
@@ -199,9 +265,300 @@ class modict(dict, metaclass=modictMeta):
             # Called as function: modict.computed(lambda m: m.a + m.b, cache=True, deps=['a', 'b'])
             return Computed(func, cache=cache, deps=deps)
 
+    @classmethod
+    def from_model(cls, pydantic_class, *, name=None, strict=None, coerce=None, **config_kwargs):
+        """Create a modict class from a Pydantic model class.
+
+        Extracts field definitions, type hints, and default values from the Pydantic
+        model and creates an equivalent modict class.
+
+        Requires Pydantic to be installed (not a hard dependency).
+
+        Args:
+            pydantic_class: Pydantic BaseModel class to convert
+            name: Name for the new modict class (default: same as Pydantic class)
+            strict: Pydantic-like strict mode (no coercion)
+            coerce: Deprecated alias; use strict=False instead
+            **config_kwargs: Additional modict config options
+
+        Returns:
+            A new modict class with fields matching the Pydantic model
+
+        Raises:
+            ImportError: If Pydantic is not installed
+            TypeError: If pydantic_class is not a Pydantic BaseModel
+
+        Examples:
+            >>> from pydantic import BaseModel
+            >>> class UserModel(BaseModel):
+            ...     name: str
+            ...     age: int = 25
+            ...     email: str | None = None
+            >>>
+            >>> User = modict.from_model(UserModel)
+            >>> user = User(name="Alice")
+            >>> user.age
+            25
+        """
+        from ._pydantic_interop import from_pydantic_model
+        return from_pydantic_model(cls, pydantic_class, name=name, strict=strict, coerce=coerce, **config_kwargs)
+
+    @classmethod
+    def to_model(cls, *, name=None, config_class=None, **config_kwargs):
+        """Create a Pydantic model class from this modict class.
+
+        Extracts field definitions, type hints, and default values from the modict
+        class and creates an equivalent Pydantic BaseModel.
+
+        Requires Pydantic to be installed (not a hard dependency).
+
+        Args:
+            name: Name for the new Pydantic class (default: same as modict class)
+            config_class: Optional Pydantic Config class to use
+            **config_kwargs: Pydantic config options (e.g., arbitrary_types_allowed=True)
+
+        Returns:
+            A new Pydantic BaseModel class with fields matching the modict
+
+        Raises:
+            ImportError: If Pydantic is not installed
+
+        Examples:
+            >>> class User(modict):
+            ...     name: str
+            ...     age: int = 25
+            ...     email: str | None = None
+            >>>
+            >>> UserModel = User.to_model()
+            >>> user = UserModel(name="Bob")
+            >>> user.age
+            25
+        """
+        from ._pydantic_interop import to_pydantic_model
+        return to_pydantic_model(cls, name=name, config_class=config_class, **config_kwargs)
+
+    @classmethod
+    def json_schema(cls, *, excluded: Optional[set[str]] = None) -> dict:
+        """Export a JSON Schema from a modict *class* (not an instance).
+
+        The schema is intended for documentation/tooling (similar to Pydantic's
+        `model_json_schema()`).
+        """
+        import types
+        import typing
+        from collections.abc import Mapping as AbcMapping, Sequence as AbcSequence
+
+        excluded = excluded or set()
+
+        def _json_schema_for_hint(hint: object, defs: dict, seen: set[type]) -> dict:
+            origin = typing.get_origin(hint)
+            args = typing.get_args(hint)
+
+            if origin is None:
+                if hint is None or hint is type(None):
+                    return {"type": "null"}
+                if hint is str:
+                    return {"type": "string"}
+                if hint is bool:
+                    return {"type": "boolean"}
+                if hint is int:
+                    return {"type": "integer"}
+                if hint is float:
+                    return {"type": "number"}
+                if isinstance(hint, type) and issubclass(hint, modict):
+                    ref_name = hint.__name__
+                    if hint not in seen:
+                        defs[ref_name] = _json_schema_for_class(hint, defs, seen)
+                    return {"$ref": f"#/$defs/{ref_name}"}
+                if isinstance(hint, type) and issubclass(hint, AbcMapping):
+                    return {"type": "object"}
+                if isinstance(hint, type) and issubclass(hint, AbcSequence) and hint is not str:
+                    return {"type": "array"}
+                return {"type": "object"}
+
+            if origin in (typing.Union, types.UnionType):
+                return {"anyOf": [_json_schema_for_hint(a, defs, seen) for a in args]}
+
+            if origin in (list, set, tuple):
+                item_schema = _json_schema_for_hint(args[0], defs, seen) if args else {"type": "object"}
+                return {"type": "array", "items": item_schema}
+
+            if origin in (dict,):
+                value_schema = _json_schema_for_hint(args[1], defs, seen) if len(args) == 2 else {"type": "object"}
+                return {"type": "object", "additionalProperties": value_schema}
+
+            return {"type": "object"}
+
+        def _field_schema(field_obj, defs: dict, seen: set[type]) -> dict:
+            from ._collections_utils import MISSING as MODICT_MISSING
+            from ._modict_meta import Factory, Computed
+
+            hint = getattr(field_obj, "hint", None)
+            default = getattr(field_obj, "default", MODICT_MISSING)
+            metadata = getattr(field_obj, "metadata", {}) or {}
+            constraints = getattr(field_obj, "constraints", {}) or {}
+
+            is_computed = isinstance(default, Computed)
+            is_factory = isinstance(default, Factory)
+            required = bool(getattr(field_obj, "required", False)) and (not is_computed)
+
+            out: dict = _json_schema_for_hint(hint, defs, seen) if hint is not None else {"type": "object"}
+            out["required"] = bool(required)
+
+            # Map a conservative subset of metadata into standard JSON Schema keywords.
+            if isinstance(metadata, dict):
+                if "title" in metadata and isinstance(metadata["title"], str):
+                    out["title"] = metadata["title"]
+                if "description" in metadata and isinstance(metadata["description"], str):
+                    out["description"] = metadata["description"]
+                if "examples" in metadata and metadata["examples"] is not None:
+                    out["examples"] = metadata["examples"]
+                if "deprecated" in metadata and isinstance(metadata["deprecated"], bool):
+                    out["deprecated"] = metadata["deprecated"]
+
+            # Map constraints into standard JSON Schema keywords.
+            if isinstance(constraints, dict):
+                # String constraints
+                if "min_length" in constraints and isinstance(constraints["min_length"], int):
+                    out["minLength"] = constraints["min_length"]
+                if "max_length" in constraints and isinstance(constraints["max_length"], int):
+                    out["maxLength"] = constraints["max_length"]
+                if "pattern" in constraints and isinstance(constraints["pattern"], str):
+                    out["pattern"] = constraints["pattern"]
+
+                # Numeric constraints
+                if "multiple_of" in constraints and isinstance(constraints["multiple_of"], (int, float)):
+                    out["multipleOf"] = constraints["multiple_of"]
+                if "ge" in constraints and isinstance(constraints["ge"], (int, float)):
+                    out["minimum"] = constraints["ge"]
+                if "gt" in constraints and isinstance(constraints["gt"], (int, float)):
+                    out["exclusiveMinimum"] = constraints["gt"]
+                if "le" in constraints and isinstance(constraints["le"], (int, float)):
+                    out["maximum"] = constraints["le"]
+                if "lt" in constraints and isinstance(constraints["lt"], (int, float)):
+                    out["exclusiveMaximum"] = constraints["lt"]
+
+            if (not is_computed) and (not is_factory) and default is not MODICT_MISSING:
+                try:
+                    import json as _json
+                    _json.dumps(default)
+                    out["default"] = default
+                except Exception:
+                    out["default_repr"] = repr(default)
+
+            return out
+
+        def _json_schema_for_class(model_cls: type["modict"], defs: dict, seen: set[type]) -> dict:
+            if model_cls in seen:
+                return {"type": "object", "title": model_cls.__name__}
+            seen.add(model_cls)
+
+            properties = {}
+            required_list: list[str] = []
+            for fname, fobj in getattr(model_cls, "__fields__", {}).items():
+                if fname in excluded:
+                    continue
+                fs = _field_schema(fobj, defs, seen)
+                if fs.pop("required", False):
+                    required_list.append(fname)
+                properties[fname] = {k: v for k, v in fs.items() if k not in ("default_repr",)}
+
+            schema: dict = {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "title": model_cls.__name__,
+                "properties": properties,
+            }
+            if required_list:
+                schema["required"] = sorted(required_list)
+
+            # JSON Schema defaults to allowing additional properties (i.e. additionalProperties=True).
+            # Only emit deviations from that default.
+            model_config = getattr(model_cls, "_config", None)
+            extra = getattr(model_config, "extra", "allow")
+            if extra == "forbid":
+                schema["additionalProperties"] = False
+            return schema
+
+        defs: dict = {}
+        seen: set[type] = set()
+        root = _json_schema_for_class(cls, defs, seen)
+        if defs:
+            root["$defs"] = defs
+        return root
+
     def __init__(self, *args, **kwargs):
 
         self._config = type(self)._config.copy()
+
+        # Pydantic-like alias support (input-only): map Field.aliases to field names.
+        # When populate_by_name=False, disallow providing field names for aliased fields.
+        if (args or kwargs) and isinstance(getattr(self, "__fields__", None), dict):
+            alias_to_field: Dict[str, str] = {}
+            field_has_alias: Set[str] = set()
+            for field_name, field_obj in self.__fields__.items():
+                alias_block = getattr(field_obj, "aliases", None) or {}
+                if not isinstance(alias_block, dict):
+                    continue
+
+                direct_alias = alias_block.get("alias")
+                if isinstance(direct_alias, str) and direct_alias:
+                    alias_to_field[direct_alias] = field_name
+                    field_has_alias.add(field_name)
+
+                validation_alias = alias_block.get("validation_alias")
+                if isinstance(validation_alias, str) and validation_alias:
+                    alias_to_field[validation_alias] = field_name
+                    field_has_alias.add(field_name)
+                elif isinstance(validation_alias, (list, tuple, set)):
+                    for item in validation_alias:
+                        if isinstance(item, str) and item:
+                            alias_to_field[item] = field_name
+                            field_has_alias.add(field_name)
+
+            if alias_to_field:
+                # Only handle the common patterns where we can safely rebuild the mapping.
+                # (dict accepts many input forms; we avoid re-implementing all coercions.)
+                if len(args) <= 1 and (len(args) == 0 or isinstance(args[0], Mapping)):
+                    data = {}
+                    if len(args) == 1:
+                        data.update(dict(args[0]))  # type: ignore[arg-type]
+                    if kwargs:
+                        data.update(kwargs)
+
+                    # Disallow ambiguous input: both alias and field name for same field.
+                    for alias, field_name in alias_to_field.items():
+                        if alias in data and field_name in data:
+                            raise TypeError(
+                                f"Field '{field_name}' received both alias '{alias}' and field name '{field_name}'"
+                            )
+
+                    if not getattr(self._config, "populate_by_name", False):
+                        for field_name in field_has_alias:
+                            if field_name in data:
+                                raise KeyError(
+                                    f"Field '{field_name}' must be provided via its alias when populate_by_name=False"
+                                )
+
+                    for alias, field_name in alias_to_field.items():
+                        if alias in data:
+                            data[field_name] = data.pop(alias)
+
+                    args = (data,)
+                    kwargs = {}
+
+        if (
+            self._config.from_attributes
+            and len(args) == 1
+            and not kwargs
+            and not isinstance(args[0], Mapping)
+        ):
+            src = args[0]
+            data: dict[str, Any] = {}
+            for field_name in getattr(self, "__fields__", {}):
+                if hasattr(src, field_name):
+                    data[field_name] = getattr(src, field_name)
+            args = (data,)
 
         super().__init__(*args,**kwargs)
 
@@ -209,19 +566,126 @@ class modict(dict, metaclass=modictMeta):
         for key, field in self.__fields__.items():
             value=field.get_default()
             if value is not MISSING:
-                if isinstance(value,Computed) or key not in self:
-                    dict.__setitem__(self, key, value)
+                if isinstance(value, Computed):
+                    if key in self:
+                        if not getattr(self._config, "override_computed", False):
+                            raise TypeError(
+                                f"Cannot override computed field '{key}' at initialization "
+                                f"(override_computed=False)"
+                            )
+                        # override_computed=True: keep user-provided value
+                    else:
+                        dict.__setitem__(self, key, value)
+                else:
+                    if key not in self:
+                        dict.__setitem__(self, key, value)
 
-        self.validate()
+        # Enforce key-level constraints (required/extra/require_all) independently of value checking.
+        if self._check_keys_enabled():
+            self._enforce_extra_policy()
+            self._check_required_fields()
 
-    def validate(self):
-        for key, value in dict.items(self):
-            # 1. Clé interdite ? → on coupe court
-            if not self._config.allow_extra and key not in self.__fields__:
+        if self._check_values_enabled():
+            self.validate()
+
+    def _check_keys_enabled(self) -> bool:
+        """Return True if modict should enforce key-level structural constraints."""
+        mode = getattr(self._config, "check_keys", "auto")
+        if mode is True:
+            return True
+        if mode is False:
+            return False
+
+        # auto: enable when the instance/class declares key constraints
+        fields = getattr(self, "__fields__", {}) or {}
+        has_required = any(bool(getattr(f, "required", False)) for f in fields.values())
+        has_computed = any(isinstance(getattr(f, "default", None), Computed) for f in fields.values())
+        # Also enable key checks as soon as the instance contains computed fields.
+        # This preserves the default "computed override protection" even for plain `modict`
+        # instances where computeds are inserted dynamically at runtime.
+        has_runtime_computed = any(isinstance(v, Computed) for v in dict.values(self))
+        wants_key_processing = bool(
+            self._config.require_all
+            or self._config.extra != "allow"
+            or has_required
+            or has_computed
+            or has_runtime_computed
+        )
+        return wants_key_processing
+
+    def _enforce_extra_policy(self) -> None:
+        """Enforce extra key policy (allow/forbid/ignore)."""
+        if not isinstance(getattr(self, "__fields__", None), dict):
+            return
+
+        extra = getattr(self._config, "extra", "allow")
+        if extra == "allow":
+            return
+
+        keys_to_remove: list[str] = []
+        for key in dict.keys(self):
+            if key in self.__fields__:
+                continue
+            if extra == "forbid":
                 raise KeyError(
                     f"Key {key!r} is not allowed. Only the following keys are permitted: "
                     f"{list(self.__fields__.keys())}"
                 )
+            if extra == "ignore":
+                keys_to_remove.append(key)
+
+        for key in keys_to_remove:
+            dict.__delitem__(self, key)
+
+    def _check_required_fields(self) -> None:
+        if not self._check_keys_enabled():
+            return
+        fields = getattr(self, "__fields__", {}) or {}
+        require_all = bool(getattr(self._config, "require_all", False))
+        for name, field in fields.items():
+            is_required = bool(getattr(field, "required", False))
+            if require_all:
+                is_required = True
+            if not is_required:
+                continue
+            # Computed fields aren't populated from input, but they are still part of the
+            # instance dict (stored as Computed objects). If require_all=True (or if the
+            # field was explicitly marked required), ensure the key exists.
+            if name not in self:
+                raise KeyError(f"Missing required field '{name}'")
+
+    def validate(self):
+        if (not self._check_values_enabled()) and (not self._check_keys_enabled()):
+            return
+
+        if self._check_keys_enabled():
+            self._enforce_extra_policy()
+            self._check_required_fields()
+
+        # Model-level validators (pre)
+        self._run_model_validators(mode="before")
+        # A "before" model validator may have replaced the underlying mapping.
+        if self._check_keys_enabled():
+            self._enforce_extra_policy()
+            self._check_required_fields()
+
+        if not self._check_values_enabled():
+            return
+
+        keys_to_remove = []
+        for key, value in dict.items(self):
+            # 1. Handle extra keys based on config
+            if key not in self.__fields__:
+                if self._config.extra == 'forbid':
+                    raise KeyError(
+                        f"Key {key!r} is not allowed. Only the following keys are permitted: "
+                        f"{list(self.__fields__.keys())}"
+                    )
+                elif self._config.extra == 'ignore':
+                    # Mark for removal (don't modify dict during iteration)
+                    keys_to_remove.append(key)
+                    continue
+                # extra == 'allow': continue with validation
 
             # 2. On ne valide pas les Computed (leurs valeurs ne sont pas stockées)
             if isinstance(value, Computed):
@@ -230,8 +694,80 @@ class modict(dict, metaclass=modictMeta):
             # 3. Validation du contenu
             dict.__setitem__(self, key, self._check_value(key, value))
 
+        # Remove ignored keys after iteration
+        for key in keys_to_remove:
+            dict.__delitem__(self, key)
+
+        # Model-level validators (post)
+        self._run_model_validators(mode="after")
+
+    def _check_values_enabled(self) -> bool:
+        """Return True if modict should run its value/key checking pipeline."""
+        mode = getattr(self._config, "check_values", "auto")
+        if mode is True:
+            return True
+        if mode is False:
+            return False
+
+        # auto: enable when the class looks "model-like"
+        has_hints = any(
+            (field.hint is not None)
+            for field in getattr(self, "__fields__", {}).values()
+        )
+        has_validators = any(
+            bool(getattr(field, "validators", []))
+            for field in getattr(self, "__fields__", {}).values()
+        )
+        has_model_validators = bool(getattr(self, "__model_validators__", ()))
+        wants_value_processing = any(
+            (
+                self._config.enforce_json,
+                self._config.str_strip_whitespace,
+                self._config.str_to_lower,
+                self._config.str_to_upper,
+                self._config.use_enum_values,
+                self._config.validate_assignment,
+                self._config.strict,
+            )
+        )
+        wants_key_processing = (self._config.extra != "allow")
+
+        return bool(has_hints or has_validators or has_model_validators or wants_value_processing or wants_key_processing)
+
+    def _run_model_validators(self, *, mode: Literal["before", "after"]) -> None:
+        """Run model-level validators for a given phase."""
+        if not self._check_values_enabled():
+            return
+        validators = getattr(self, "__model_validators__", ())
+        if not validators:
+            return
+
+        from collections.abc import Mapping as AbcMapping
+
+        for validator in validators:
+            if getattr(validator, "mode", "after") != mode:
+                continue
+
+            result = validator(self)
+            if result is None or result is self:
+                continue
+            if isinstance(result, AbcMapping):
+                if mode == "before":
+                    # Apply raw updates; field validation will happen afterwards.
+                    dict.clear(self)
+                    dict.update(self, result)
+                else:
+                    # Apply updates and validate updated fields immediately.
+                    for key, value in result.items():
+                        checked = self._check_value(key, value)
+                        dict.__setitem__(self, key, checked)
+                continue
+            raise TypeError(
+                f"model_validator must return None, self, or a Mapping; got {type(result).__name__}"
+            )
+
     def _check_value(self, key, value, hint=None):
-        """Consolidate all validation: checkers + type checking.
+        """Consolidate all validation: validators + type checking.
 
         Used for incoming, outgoing, and computed property values.
 
@@ -243,45 +779,191 @@ class modict(dict, metaclass=modictMeta):
         Returns:
             The checked and potentially transformed value
         """
+        if not self._check_values_enabled():
+            return value
 
-        # 1. Appliquer les checkers custom d'abord (transformation permissive)
-        value = self._apply_checks(key, value)
+        # 0. Extract enum values first (before validation/transformation)
+        value = self._apply_enum_value_extraction(value)
 
-        # 2. Tenter la coercion
-        if self._config.coerce:
+        # 1. Apply string transformations (after enum extraction, before other processing)
+        value = self._apply_string_transformations(value)
+
+        # 2. Apply validators "before" (permissive transformations)
+        value = self._apply_validators(key, value, mode="before")
+
+        # 3. Tenter la coercion
+        if not self._config.strict:
             value = self._coerce_value(key, value, hint)
-        
-        # 3. Type checking ensuite (validation stricte du résultat)
+
+        # 4. Type checking ensuite (validation stricte du résultat)
         if hint is None:
             # Récupérer le hint du Field si pas fourni
             field = self.__fields__.get(key)
             if field and field.hint is not None:
                 hint = field.hint
-        
-        # Vérifier le type si on a un hint et que le mode strict est activé
+
+        # Vérifier le type si on a un hint (Pydantic-like: always, strict controls coercion)
         if hint is not None:
             self._check_type(key, value, hint)
 
+        # 5. Apply validators "after" (Pydantic-like)
+        value = self._apply_validators(key, value, mode="after")
+
+        # Re-check type after post-validators (they may transform values)
+        if hint is not None:
+            self._check_type(key, value, hint)
+
+        # 6. Apply JSON-Schema-like constraints from Field.metadata (when present)
+        self._apply_constraints(key, value)
+
         if self._config.enforce_json:
             self._check_json_serializable(key, value)
-        
+
         return value
 
-    def _apply_checks(self, key, value):
-        """Apply all field checkers in order (parent → child).
+    def _apply_constraints(self, key: str, value: Any) -> None:
+        """Apply generic constraints declared in Field.metadata.
+
+        These constraints are JSON-Schema-like keywords stored in Field.metadata
+        (e.g. ge/gt/le/lt, multiple_of, min_length/max_length, pattern).
+        """
+        field = self.__fields__.get(key)
+        if field is None:
+            return
+
+        constraints = getattr(field, "constraints", None) or {}
+        if not isinstance(constraints, dict) or not constraints:
+            return
+
+        # Numeric comparisons
+        for md_key, op, label in (
+            ("gt", lambda a, b: a > b, ">"),
+            ("ge", lambda a, b: a >= b, ">="),
+            ("lt", lambda a, b: a < b, "<"),
+            ("le", lambda a, b: a <= b, "<="),
+        ):
+            if md_key in constraints and constraints[md_key] is not None:
+                bound = constraints[md_key]
+                try:
+                    ok = op(value, bound)
+                except Exception as e:
+                    raise TypeError(
+                        f"Field '{key}' cannot be compared with constraint {md_key}={bound!r}"
+                    ) from e
+                if not ok:
+                    raise ValueError(f"Field '{key}' must be {label} {bound!r}")
+
+        # multiple_of
+        if "multiple_of" in constraints and constraints["multiple_of"] is not None:
+            multiple_of = constraints["multiple_of"]
+            if multiple_of == 0:
+                raise ValueError(f"Field '{key}' has invalid constraint multiple_of=0")
+
+            try:
+                import math
+
+                if isinstance(value, bool):
+                    raise TypeError
+                if isinstance(value, int) and isinstance(multiple_of, int):
+                    ok = (value % multiple_of) == 0
+                else:
+                    q = value / multiple_of
+                    ok = math.isclose(q, round(q), rel_tol=0.0, abs_tol=1e-12)
+            except Exception as e:
+                raise TypeError(
+                    f"Field '{key}' cannot be checked against multiple_of={multiple_of!r}"
+                ) from e
+
+            if not ok:
+                raise ValueError(f"Field '{key}' must be a multiple of {multiple_of!r}")
+
+        # min_length / max_length (strings & sized containers)
+        for md_key, op, label in (
+            ("min_length", lambda n, b: n >= b, ">="),
+            ("max_length", lambda n, b: n <= b, "<="),
+        ):
+            if md_key in constraints and constraints[md_key] is not None:
+                bound = constraints[md_key]
+                try:
+                    n = len(value)  # type: ignore[arg-type]
+                except Exception as e:
+                    raise TypeError(f"Field '{key}' has no length for {md_key}={bound!r}") from e
+                if not op(n, bound):
+                    raise ValueError(f"Field '{key}' length must be {label} {bound!r}")
+
+        # pattern / regex (best-effort: Python regex)
+        pattern = constraints.get("pattern") or constraints.get("regex")
+        if pattern is not None:
+            import re
+
+            if not isinstance(value, str):
+                raise TypeError(f"Field '{key}' must be a string to apply pattern constraint")
+            try:
+                rx = re.compile(pattern)
+            except re.error as e:
+                raise ValueError(f"Field '{key}' has invalid pattern {pattern!r}") from e
+            if rx.search(value) is None:
+                raise ValueError(f"Field '{key}' must match pattern {pattern!r}")
+
+    def _apply_string_transformations(self, value):
+        """Apply Pydantic-aligned string transformations.
+
+        Args:
+            value: The value to transform
+
+        Returns:
+            The transformed value (strings only, others unchanged)
+        """
+        if not isinstance(value, str):
+            return value
+
+        # Apply transformations in order
+        if self._config.str_strip_whitespace:
+            value = value.strip()
+
+        if self._config.str_to_lower:
+            value = value.lower()
+        elif self._config.str_to_upper:  # elif: only one case transformation
+            value = value.upper()
+
+        return value
+
+    def _apply_enum_value_extraction(self, value):
+        """Extract enum value if use_enum_values is enabled.
+
+        Args:
+            value: The value to process
+
+        Returns:
+            The enum's value if value is an Enum and use_enum_values=True,
+            otherwise the original value
+        """
+        from enum import Enum
+
+        if self._config.use_enum_values and isinstance(value, Enum):
+            return value.value
+
+        return value
+
+    def _apply_validators(self, key, value, *, mode: Literal["before", "after"] = "before"):
+        """Apply field validators for a given phase (parent → child).
 
         Args:
             key: The field name
             value: The value to check
+            mode: "before" (default) or "after"
 
         Returns:
-            The transformed value after all checkers
+            The transformed value after all validators
         """
         field = self.__fields__.get(key)
-        if field and field.checkers:
-            for checker in field.checkers:
-                value = checker(self, value)
+        validators = getattr(field, "validators", None)
+        if field and validators:
+            for validator in validators:
+                if getattr(validator, "mode", "before") == mode:
+                    value = validator(self, value)
         return value
+
     
     def _coerce_value(self, key: str, value: Any, hint: Any = None) -> Any:
         """Attempt to coerce value to the expected type.
@@ -305,13 +987,13 @@ class modict(dict, metaclass=modictMeta):
         try:
             check_type(hint, value)
             return value
-        except:
+        except Exception:
             pass  # Type check a échoué, on tente la coercion
         
         # Tentative de coercion
         try:
             return coerce(value, hint)
-        except:
+        except Exception:
             return value
     
     def _check_json_serializable(self, key: str, value: Any) -> None:
@@ -324,32 +1006,45 @@ class modict(dict, metaclass=modictMeta):
         Raises:
             ValueError: If the value is not JSON serializable
         """
+        encoders = getattr(self._config, "json_encoders", None) or {}
+
+        def _default(o):
+            if encoders:
+                for t, fn in encoders.items():
+                    if isinstance(o, t):
+                        return fn(o)
+            raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
         try:
             # Test de sérialisation rapide
-            json.dumps(value)
-        except (TypeError, ValueError, OverflowError) as e:
-            # Types problématiques courants
-            if isinstance(value, (set, frozenset)):
-                suggestion = f" (convert to list: {list(value)!r})"
-            elif callable(value):
-                suggestion = " (functions are not JSON serializable)"
-            elif hasattr(value, '__dict__'):
-                suggestion = f" (convert to dict: {vars(value)!r})"
-            else:
-                suggestion = ""
-                
+            json.dumps(
+                value,
+                allow_nan=bool(getattr(self._config, "allow_inf_nan", True)),
+                default=_default if encoders else None,
+            )
+        except (TypeError, ValueError, OverflowError) as e:                
             raise ValueError(
-                f"Field '{key}' contains non-JSON-serializable value: {type(value).__name__}{suggestion}"
+                f"Field '{key}' contains non-JSON-serializable value: {type(value).__name__}"
             ) from e
 
     def _check_type(self,key,value,hint):
-        # basic isinstance check for now
-        if self._config.strict:
+        # Pydantic-like behavior: when use_enum_values=True, allow Enum fields
+        # to hold their underlying .value (e.g. Color.RED -> "red").
+        if getattr(self._config, "use_enum_values", False) and isinstance(hint, type):
             try:
-                check_type(hint,value)
-                return True
-            except TypeMismatchError:
-                raise TypeError(f"Key {key!r} expected an instance of {hint}, got {type(value)}")
+                from enum import Enum
+
+                if issubclass(hint, Enum) and not isinstance(value, Enum):
+                    allowed = {type(m.value) for m in hint}  # type: ignore[arg-type]
+                    if any(isinstance(value, t) for t in allowed):
+                        return True
+            except Exception:
+                pass
+        try:
+            check_type(hint, value)
+            return True
+        except TypeMismatchError as e:
+            raise TypeError(f"Key {key!r} expected {hint}, got {type(value)}") from e
             
     def _invalidate_dependants(self, changed_keys: set):
         """Recursively invalidate computed properties that depend on the given keys.
@@ -382,13 +1077,47 @@ class modict(dict, metaclass=modictMeta):
             if isinstance(value, Computed):
                 value.invalidate_cache()
 
+    def invalidate_computed(self, *names: str) -> None:
+        """Manually invalidate cached computed fields.
+
+        This is useful when you use `deps=[]` (never auto-invalidate) or when
+        changes happen outside of `modict`'s assignment hooks.
+
+        Args:
+            *names: Names of computed fields to invalidate. If omitted, invalidates all.
+
+        Raises:
+            KeyError: If a name doesn't exist in the dict.
+            TypeError: If a name exists but is not a computed field.
+        """
+        if not names:
+            self._invalidate_all()
+            return
+
+        invalidated: set[str] = set()
+        for name in names:
+            if name not in self:
+                raise KeyError(name)
+            raw = dict.__getitem__(self, name)
+            if not isinstance(raw, Computed):
+                raise TypeError(f"'{name}' is not a computed field")
+            raw.invalidate_cache()
+            invalidated.add(name)
+
+        # Cascade invalidation for computed fields depending on these names.
+        self._invalidate_dependants(invalidated)
+
+    def invalidate_all_computed(self) -> None:
+        """Invalidate all cached computed fields."""
+        self._invalidate_all()
+
     def _auto_convert_value(self, value):
         if not self._config.auto_convert:
             return value
         # Ici on reste data-structure agnostique
         if is_mutable_container(value):
-            # Important : on retourne un modict "pur", pas une sous-classe
-            return modict.convert(value)
+            # Important : en cas de dict, on retourne un modict "pur", pas une sous-classe
+            return modict.convert(value, recurse=False)
         return value
 
     def _auto_convert_and_store(self, key, value):
@@ -429,6 +1158,8 @@ class modict(dict, metaclass=modictMeta):
         value = dict.__getitem__(self, key)
 
         if isinstance(value, Computed):
+            if not bool(getattr(self._config, "evaluate_computed", True)):
+                return value
             computed_value = value(self)
             checked = self._check_value(key, computed_value)
             # Pour les computed, on NE stocke pas le résultat dans le dict,
@@ -439,23 +1170,58 @@ class modict(dict, metaclass=modictMeta):
         return self._auto_convert_and_store(key, value)
 
     def __setitem__(self, key, value):
-        if not self._config.allow_extra and key not in self.__fields__:
-            raise KeyError(
-                f"Key {key!r} is not allowed. Only the following keys are permitted: "
-                f"{list(self.__fields__.keys())}"
+        # Check if frozen
+        if self._config.frozen:
+            raise TypeError(
+                f"Cannot assign to field '{key}': instance is frozen (immutable). "
+                f"Set frozen=False in config to allow modifications."
             )
+
+        # Prevent accidental overwrites of computed fields unless explicitly allowed.
+        # This is a key-level constraint, controlled by check_keys.
+        if self._check_keys_enabled() and not isinstance(value, Computed):
+            existing = dict.get(self, key, MISSING)
+            if isinstance(existing, Computed) and not getattr(self._config, "override_computed", False):
+                raise TypeError(f"Cannot override computed field '{key}' (override_computed=False)")
+
+        if self._check_keys_enabled():
+            # Handle extra keys based on config
+            if key not in self.__fields__:
+                if self._config.extra == 'forbid':
+                    raise KeyError(
+                        f"Key {key!r} is not allowed. Only the following keys are permitted: "
+                        f"{list(self.__fields__.keys())}"
+                    )
+                elif self._config.extra == 'ignore':
+                    # Silently ignore: don't store, just return
+                    return
+                # extra == 'allow': continue with storage
 
         # Cas particulier : on stocke les Computed bruts, sans validation/invalidation
         if isinstance(value, Computed):
             dict.__setitem__(self, key, value)
             return
 
-        # Cas normal : validation / coercion / JSON / type
-        value = self._check_value(key, value)
+        # Cas normal : validation / coercion / JSON / type (optional on assignment)
+        if self._check_values_enabled() and self._config.validate_assignment:
+            value = self._check_value(key, value)
         dict.__setitem__(self, key, value)
         self._invalidate_dependants({key})
 
     def __delitem__(self, key):
+        # Check if frozen
+        if self._config.frozen:
+            raise TypeError(
+                f"Cannot delete field '{key}': instance is frozen (immutable). "
+                f"Set frozen=False in config to allow modifications."
+            )
+        if self._check_keys_enabled():
+            # If require_all=True, declared fields must always be present.
+            if bool(getattr(self._config, "require_all", False)) and key in getattr(self, "__fields__", {}):
+                raise TypeError(f"Cannot delete declared field '{key}' (require_all=True)")
+            existing = dict.get(self, key, MISSING)
+            if isinstance(existing, Computed) and not getattr(self._config, "override_computed", False):
+                raise TypeError(f"Cannot delete computed field '{key}' (override_computed=False)")
         # On laisse remonter le KeyError si pas de clé
         dict.__delitem__(self, key)
         self._invalidate_dependants({key})
@@ -600,6 +1366,12 @@ class modict(dict, metaclass=modictMeta):
             return default
 
     def clear(self):
+        if (
+            self._check_keys_enabled()
+            and bool(getattr(self._config, "require_all", False))
+            and getattr(self, "__fields__", None)
+        ):
+            raise TypeError("Cannot clear a model with require_all=True")
         dict.clear(self)
         self._invalidate_all()
 
@@ -657,7 +1429,14 @@ class modict(dict, metaclass=modictMeta):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
 
     @classmethod
-    def convert(cls, obj: Any, seen: Optional[Dict] = None, root: bool = True) -> 'modict':
+    def convert(
+        cls,
+        obj: Any,
+        seen: Optional[Dict] = None,
+        root: bool = True,
+        *,
+        recurse: bool = True,
+    ) -> 'modict':
         """Convert dicts to modicts recursively.
 
         Takes any object as input and converts nested dictionaries to modicts.
@@ -667,6 +1446,10 @@ class modict(dict, metaclass=modictMeta):
             obj: The object to convert
             seen: Internal dict for tracking circular references (used in recursion)
             root: Whether this is the root call (affects which class is used)
+            recurse: If False, stop recursion when reaching a modict node
+                (either an existing modict or a dict that gets converted to a modict).
+                This is useful for lazy auto-conversion: nested modicts will convert
+                their own children upon access.
 
         Returns:
             The converted object:
@@ -699,14 +1482,18 @@ class modict(dict, metaclass=modictMeta):
         # Register the new instance as output for an already seen input
         seen[obj_id] = obj
 
+        # If recursion is disabled, stop at modict nodes (existing or newly converted)
+        if not recurse and isinstance(obj, modict):
+            return obj
+
         # then we recursively convert the values
         if is_mutable_container(obj):
             # We convert in situ to preserve references of original containers as much as possible
             for k, v in unroll(obj):
                 if isinstance(obj, modict):
-                    dict.__setitem__(obj, k, cls.convert(v, seen, root=False))
+                    dict.__setitem__(obj, k, cls.convert(v, seen, root=False, recurse=recurse))
                 else:
-                    obj[k] = cls.convert(v, seen, root=False)
+                    obj[k] = cls.convert(v, seen, root=False, recurse=recurse)
 
         return obj
 
@@ -770,6 +1557,115 @@ class modict(dict, metaclass=modictMeta):
             dict: A plain dict with all nested modicts converted
         """
         return self.__class__.unconvert(self)
+
+    def model_dump(
+        self,
+        *,
+        by_alias: bool = False,
+        exclude_none: bool = False,
+        include: Optional[set[str]] = None,
+        exclude: Optional[set[str]] = None,
+        encoders: Optional[Dict[Type, Callable[[Any], Any]]] = None,
+    ):
+        """Serialize to plain Python objects (Pydantic-like).
+
+        Args:
+            by_alias: Use Field.aliases["serialization_alias"] or ["alias"] as output key.
+            exclude_none: Drop keys with value None.
+            include: Optional set of keys to include (field names, not aliases).
+            exclude: Optional set of keys to exclude (field names, not aliases).
+            encoders: Optional mapping of types to encoder callables.
+        """
+        from enum import Enum
+
+        effective_encoders = encoders
+        if effective_encoders is None:
+            effective_encoders = getattr(self._config, "json_encoders", None) or {}
+
+        def apply_encoder(val):
+            if not effective_encoders:
+                return val
+            for t, fn in effective_encoders.items():
+                try:
+                    if isinstance(val, t):
+                        return fn(val)
+                except Exception:
+                    continue
+            return val
+
+        def dump_value(val):
+            if isinstance(val, modict):
+                return val.model_dump(
+                    by_alias=by_alias,
+                    exclude_none=exclude_none,
+                    include=None,
+                    exclude=None,
+                    encoders=effective_encoders,
+                )
+            if isinstance(val, list):
+                return [dump_value(v) for v in val]
+            if isinstance(val, tuple):
+                return [dump_value(v) for v in val]
+            if isinstance(val, set):
+                return [dump_value(v) for v in val]
+            if isinstance(val, dict):
+                return {k: dump_value(v) for k, v in val.items()}
+
+            # If use_enum_values=True, normalize Enum to .value before encoding.
+            if getattr(self._config, "use_enum_values", False) and isinstance(val, Enum):
+                val = val.value
+
+            return apply_encoder(val)
+
+        out = {}
+        fields = getattr(type(self), "__fields__", {}) or {}
+        for key in self.keys():
+            if include is not None and key not in include:
+                continue
+            if exclude is not None and key in exclude:
+                continue
+
+            val = self[key]
+            if exclude_none and val is None:
+                continue
+
+            out_key = key
+            if by_alias and key in fields:
+                alias_block = getattr(fields[key], "aliases", {}) or {}
+                if isinstance(alias_block, dict):
+                    out_key = (
+                        alias_block.get("serialization_alias")
+                        or alias_block.get("alias")
+                        or key
+                    )
+
+            out[out_key] = dump_value(val)
+
+        return out
+
+    def model_dump_json(
+        self,
+        *,
+        by_alias: bool = False,
+        exclude_none: bool = False,
+        include: Optional[set[str]] = None,
+        exclude: Optional[set[str]] = None,
+        encoders: Optional[Dict[Type, Callable[[Any], Any]]] = None,
+        **json_kwargs,
+    ) -> str:
+        """Serialize to JSON (Pydantic-like), using model_dump()."""
+        allow_nan = bool(getattr(self._config, "allow_inf_nan", True))
+        return json.dumps(
+            self.model_dump(
+                by_alias=by_alias,
+                exclude_none=exclude_none,
+                include=include,
+                exclude=exclude,
+                encoders=encoders,
+            ),
+            allow_nan=allow_nan,
+            **json_kwargs,
+        )
 
     def get_nested(self, path: str | tuple | Path, default=MISSING):
         """Retrieve a nested value using a path.
@@ -930,14 +1826,34 @@ class modict(dict, metaclass=modictMeta):
             modict({'alpha': 1, 'beta': 2, 'c': 3})
         """
         mapping = dict(*args, **kwargs)
-        # Create a new dictionary preserving the order of the original items
-        new_dict = type(self)()
-        for key, value in self.items():
-            new_key = mapping.get(key, key)
-            new_dict[new_key] = value
-        # Update self in place to maintain the original reference
-        self.clear()
-        self.update(new_dict)
+        declared_fields = set(getattr(self, "__fields__", {}) or {})
+
+        # In require_all mode, allow renaming dynamic keys only (not declared fields),
+        # and forbid renaming into declared field names (would overwrite invariants).
+        if self._check_keys_enabled() and bool(getattr(self._config, "require_all", False)) and declared_fields:
+            for old_key, new_key in mapping.items():
+                if old_key in declared_fields:
+                    raise TypeError(f"Cannot rename declared field '{old_key}' (require_all=True)")
+                if new_key in declared_fields:
+                    raise TypeError(
+                        f"Cannot rename '{old_key}' to declared field '{new_key}' (require_all=True)"
+                    )
+
+        # Preserve order and preserve raw stored values (do not go through __getitem__),
+        # otherwise computed fields would be evaluated and replaced by their values.
+        new_items: list[tuple[Any, Any]] = []
+        for key, value in dict.items(self):
+            new_items.append((mapping.get(key, key), value))
+
+        # Rebuild in place while keeping reference stable.
+        # Use dict.clear to bypass modict.clear guards; we re-check invariants afterwards.
+        dict.clear(self)
+        for k, v in new_items:
+            dict.__setitem__(self, k, v)
+
+        # Renaming keys can change computed dependency meaning; invalidate caches.
+        self._invalidate_all()
+        self._check_required_fields()
         
     def exclude(self, *excluded_keys):
         """Exclude specified keys from the modict, preserving the original order.
@@ -1041,16 +1957,36 @@ class modict(dict, metaclass=modictMeta):
             walked: A path:value flattened dictionary (e.g., {'a.0.b': 1, 'a.1.c': 2})
 
         Returns:
-            Reconstructed nested modict or list structure
+            Reconstructed nested structure (modict or preserved container type)
 
         Examples:
             >>> walked_data = modict({'a.0': 1, 'a.1.b': 2, 'c': 3})
             >>> modict.unwalk(walked_data)
             modict({'a': [1, {'b': 2}], 'c': 3})
+
+            >>> # Preserves custom container types
+            >>> from collections import OrderedDict
+            >>> walked_data = {Path('$.config.x'): 1}  # First component has OrderedDict
+            >>> result = modict.unwalk(walked_data)
+            >>> type(result)  # OrderedDict preserved if that was the original type
         """
-        unwalked=unwalk(walked)
-        if isinstance(unwalked,Mapping):
-            return cls(unwalked)
+        unwalked = unwalk(walked)
+
+        # Only convert to cls if:
+        # 1. It's a Mapping AND
+        # 2. It's a plain dict OR it's a modict but not the right subclass
+        if isinstance(unwalked, Mapping):
+            # Plain dict → convert to cls
+            if type(unwalked) is dict:
+                return cls(unwalked)
+            # modict instance but wrong subclass → convert to cls
+            elif isinstance(unwalked, modict) and not isinstance(unwalked, cls):
+                return cls(unwalked)
+            # Otherwise (OrderedDict, UserDict, correct modict subclass, etc.) → keep as-is
+            else:
+                return unwalked
+
+        # Not a Mapping (e.g., list) → return as-is
         return unwalked
 
     def merge(self, other: Mapping):
@@ -1234,10 +2170,11 @@ class modict(dict, metaclass=modictMeta):
                               parse_float=parse_float, parse_int=parse_int,
                               parse_constant=parse_constant,
                               object_pairs_hook=object_pairs_hook, **kw)
-    
+
     def dumps(self, *, skipkeys=False, ensure_ascii=True, check_circular=True,
               allow_nan=True, cls=None, indent=None, separators=None,
-              default=None, sort_keys=False, **kw):
+              default=None, sort_keys=False, by_alias: bool = False,
+              exclude_none: bool = False, encoders: Optional[Dict[Type, Callable[[Any], Any]]] = None, **kw):
         """Return a JSON string representation of the modict.
         
         This method has the same signature and behavior as json.dumps().
@@ -1267,14 +2204,40 @@ class modict(dict, metaclass=modictMeta):
             >>> config.dumps(indent=2, sort_keys=True)
             # Pretty-printed JSON
         """
-        return json.dumps(self, skipkeys=skipkeys, ensure_ascii=ensure_ascii,
-                         check_circular=check_circular, allow_nan=allow_nan,
-                         cls=cls, indent=indent, separators=separators,
-                         default=default, sort_keys=sort_keys, **kw)
+        if by_alias or exclude_none or encoders is not None:
+            payload = self.model_dump(by_alias=by_alias, exclude_none=exclude_none, encoders=encoders)
+            return json.dumps(
+                payload,
+                skipkeys=skipkeys,
+                ensure_ascii=ensure_ascii,
+                check_circular=check_circular,
+                allow_nan=allow_nan,
+                cls=cls,
+                indent=indent,
+                separators=separators,
+                default=default,
+                sort_keys=sort_keys,
+                **kw,
+            )
+
+        return json.dumps(
+            self,
+            skipkeys=skipkeys,
+            ensure_ascii=ensure_ascii,
+            check_circular=check_circular,
+            allow_nan=allow_nan,
+            cls=cls,
+            indent=indent,
+            separators=separators,
+            default=default,
+            sort_keys=sort_keys,
+            **kw,
+        )
     
     def dump(self, fp, *, skipkeys=False, ensure_ascii=True, check_circular=True,
              allow_nan=True, cls=None, indent=None, separators=None,
-             default=None, sort_keys=False, **kw):
+             default=None, sort_keys=False, by_alias: bool = False,
+             exclude_none: bool = False, encoders: Optional[Dict[Type, Callable[[Any], Any]]] = None, **kw):
         """Write the modict as JSON to a file.
         
         This method has the same signature and behavior as json.dump().
@@ -1303,14 +2266,42 @@ class modict(dict, metaclass=modictMeta):
         # Support path-like objects
         if hasattr(fp, 'write'):
             # File-like object
-            json.dump(self, fp, skipkeys=skipkeys, ensure_ascii=ensure_ascii,
-                     check_circular=check_circular, allow_nan=allow_nan,
-                     cls=cls, indent=indent, separators=separators,
-                     default=default, sort_keys=sort_keys, **kw)
+            if by_alias or exclude_none or encoders is not None:
+                payload = self.model_dump(by_alias=by_alias, exclude_none=exclude_none, encoders=encoders)
+                json.dump(
+                    payload,
+                    fp,
+                    skipkeys=skipkeys,
+                    ensure_ascii=ensure_ascii,
+                    check_circular=check_circular,
+                    allow_nan=allow_nan,
+                    cls=cls,
+                    indent=indent,
+                    separators=separators,
+                    default=default,
+                    sort_keys=sort_keys,
+                    **kw,
+                )
+            else:
+                json.dump(
+                    self,
+                    fp,
+                    skipkeys=skipkeys,
+                    ensure_ascii=ensure_ascii,
+                    check_circular=check_circular,
+                    allow_nan=allow_nan,
+                    cls=cls,
+                    indent=indent,
+                    separators=separators,
+                    default=default,
+                    sort_keys=sort_keys,
+                    **kw,
+                )
         else:
             # Path-like object  
             with open(fp, 'w') as f:
                 self.dump(f, skipkeys=skipkeys, ensure_ascii=ensure_ascii,
                          check_circular=check_circular, allow_nan=allow_nan,
                          cls=cls, indent=indent, separators=separators,
-                         default=default, sort_keys=sort_keys, **kw)
+                         default=default, sort_keys=sort_keys,
+                         by_alias=by_alias, exclude_none=exclude_none, encoders=encoders, **kw)

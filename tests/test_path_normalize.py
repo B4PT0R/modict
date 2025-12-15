@@ -42,13 +42,13 @@ class TestPathNormalize:
         path = Path.normalize(jsonpath_str)
 
         assert path.components[0].value == 'data'
-        assert path.components[0].container_type == 'mapping'
+        assert path.components[0].container_class == dict
         assert path.components[1].value == 0
-        assert path.components[1].container_type == 'sequence'
+        assert path.components[1].container_class == list
         assert path.components[2].value == 'items'
-        assert path.components[2].container_type == 'mapping'
+        assert path.components[2].container_class == dict
         assert path.components[3].value == 'key'
-        assert path.components[3].container_type == 'mapping'
+        assert path.components[3].container_class == dict
 
     def test_normalize_empty_tuple(self):
         """Test Path.normalize() with empty tuple (root path)."""

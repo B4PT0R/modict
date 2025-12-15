@@ -55,61 +55,56 @@ Notes:
 """
 
 from collections.abc import Collection,Mapping,Sequence,MutableMapping,MutableSequence
-from typing import Any, Union, Dict, Tuple, Type, Optional, Set, Generic, Iterator, Callable, TypeVar
+from typing import Any, Union, Dict, Tuple, Type, Optional, Set, Generic, Iterator, Callable, TypeVar, List
 from itertools import islice
-from ._basic import  set_key, MISSING, keys, has_key, unroll
 
-from ._types import (
-    Key,
-    Container,
-    MutableContainer,
-    PathType,
-    CallbackFn,
-    is_container,
-    is_mutable_container,
-)
+from ._path import Path, PathKey, is_identifier
+from ._types import Key, PathType, Container, MutableContainer, is_container, is_mutable_container
+from ._basic import has_key, set_key, keys, unroll
+from ._missing import MISSING
 
-# TypeVars for generic container functions
-C = TypeVar('C', bound=Container)
+"""Sentinel value to distinguish missing values from None.
 
-from ._path import Path, PathKey
+Use this to detect when a value doesn't exist, as opposed to existing with a value of None.
+
+Examples:
+    >>> data = {'a': None, 'b': 1}
+    >>> get_nested(data, '$.a', default=MISSING)
+    None  # Key exists with value None
+    >>> get_nested(data, '$.c', default=MISSING) is MISSING
+    True  # Key doesn't exist
+"""
+
 
 def get_nested(obj: Container, path: PathType, default: Any = MISSING) -> Any:
-    """Retrieve a nested value using a path.
+    """Get a value from a nested container using a path.
 
     Args:
-        obj: Nested structure to traverse
+        obj: Container to query
         path: Either JSONPath string ("$.a[0].b"), tuple of keys, or Path object
-        default: Value to return if path doesn't exist
+        default: Value to return if path doesn't exist (default: raise exception)
 
     Returns:
-        Value at path or default if provided
+        The value at the given path
 
     Raises:
-        TypeError: If obj is not a container
         KeyError: If path doesn't exist and no default provided
+        TypeError: If obj is not a container or path traverses non-container
 
     Examples:
-        >>> data = {"a": {"b": [1, 2, {"c": 3}]}}
-        >>> get_nested(data, "$.a.b[2].c")
-        3
-        >>> get_nested(data, ("a", "b", 2, "c"))
-        3
-        >>> get_nested(data, "$.x.y.z", default=None)
+        >>> data = {'a': [1, {'b': 2}], 'c': 3}
+        >>> get_nested(data, "$.a[1].b")
+        2
+        >>> get_nested(data, "$.missing", default=None)
         None
     """
-    if not is_container(obj):
-        raise TypeError(f"Expected a Mapping or Sequence container, got {type(obj)}")
-
     path_obj = Path.normalize(path)
-
-    if default is not MISSING:
-        return path_obj.try_resolve(obj, default=default)
-    else:
-        try:
-            return path_obj.resolve(obj)
-        except (KeyError, IndexError, TypeError) as e:
-            raise KeyError(f"Path {path!r} not found in container") from e
+    try:
+        return path_obj.resolve(obj)
+    except (KeyError, IndexError, TypeError):
+        if default is MISSING:
+            raise
+        return default
 
 def set_nested(obj:Container, path: PathType, value):
     """Set a nested value, creating intermediate containers as needed.
@@ -147,9 +142,22 @@ def set_nested(obj:Container, path: PathType, value):
             # Need to create intermediate container
             # Look at next component to decide what type to create
             next_component = components[i + 1]
-            if next_component.container_type == "sequence" or (next_component.container_type == "unknown" and isinstance(next_component.value, int)):
+            if next_component.container_class is not None:
+                # We know the exact container type to create!
+                try:
+                    new_container = next_component.container_class()
+                except TypeError:
+                    # Container class needs arguments, fall back to dict/list
+                    if issubclass(next_component.container_class, Sequence):
+                        new_container = []
+                    else:
+                        new_container = {}
+                set_key(current, component.value, new_container)
+            elif isinstance(next_component.value, int):
+                # Ambiguous but int key suggests list
                 set_key(current, component.value, [])
-            else:  # mapping
+            else:
+                # Default to dict for string keys
                 set_key(current, component.value, {})
             current = current[component.value]
         else:
@@ -162,79 +170,94 @@ def pop_nested(obj:Container, path:PathType, default=MISSING):
     This includes these cases:
         - the path doesn't exist or doesn't make sense in the structure
         - the path actually exists but ends in an immutable container in which we can't pop
+    """
+    path_obj = Path.normalize(path)
+    if path_obj.is_root:
+        raise ValueError("Cannot pop the root path")
+
+    parent_path, last_component = path_obj.pop()
+
+    try:
+        if parent_path.is_root:
+            parent = obj
+        else:
+            parent = parent_path.resolve(obj)
+
+        if not is_mutable_container(parent):
+            if default is not MISSING:
+                return default
+            raise TypeError(f"Cannot pop from immutable container of type {type(parent).__name__}")
+
+        if isinstance(parent, MutableMapping):
+            if not has_key(parent, last_component.value):
+                if default is not MISSING:
+                    return default
+                raise KeyError(f"Key {last_component.value!r} not found in container")
+            return parent.pop(last_component.value)
+        elif isinstance(parent, MutableSequence):
+            if not isinstance(last_component.value, int):
+                if default is not MISSING:
+                    return default
+                raise TypeError(f"Expected integer index, got {type(last_component.value).__name__}")
+            try:
+                return parent.pop(last_component.value)
+            except IndexError:
+                if default is not MISSING:
+                    return default
+                raise
+        else:
+            if default is not MISSING:
+                return default
+            raise TypeError(f"Cannot pop from container of type {type(parent).__name__}")
+    except (KeyError, IndexError, TypeError):
+        if default is not MISSING:
+            return default
+        raise
+
+def del_nested(obj:Container, path:PathType):
+    """Delete a nested key/index.
 
     Args:
         obj: Container to modify
         path: Either JSONPath string ("$.a[0].b"), tuple of keys, or Path object
 
     Raises:
-        TypeError: If obj is not a container, or we attempt to modify an immutable container
+        TypeError: If attempting to modify an immutable container
         KeyError: If path doesn't exist
+
+    Examples:
+        >>> data = {'a': [1, 2, {'b': 3}]}
+        >>> del_nested(data, "$.a[2].b")
+        >>> data
+        {'a': [1, 2, {}]}
     """
-    if not is_container(obj):
-        raise TypeError(f"Expected a Mapping or Sequence container, got {type(obj)}")
-
-    path_obj = Path.normalize(path)
-    components = path_obj.components
-
-    current = obj
-    try:
-        for i, component in enumerate(components):
-            if is_container(current) and has_key(current, component.value):
-                if i == len(components) - 1:
-                    if is_mutable_container(current):
-                        value = current[component.value]
-                        del current[component.value]
-                        return value
-                    else:
-                        raise TypeError(f"Can't delete in an immutable container. Attempt to delete key={component.value!r} in {current} of immutable type {type(current)} caused this error.")
-                current = current[component.value]
-            else:
-                raise KeyError(f"Path {path!r} not found in container")
-
-    except (KeyError, TypeError):
-        if default is not MISSING:
-            return default
-        else:
-            raise
-
-def del_nested(obj:Container, path:PathType):
-    """deletes a nested key/index (if found).
-    
-    Args:
-        obj: Container to modify
-        path: Path to the value to delete
-        
-    Raises:
-        TypeError: If obj is not a container, or we attempt to modify an immutable container
-        KeyError: If path doesn't exist
-    
-    
-    """
-    # delegate the logic to pop_nested, we just don't return the output
     pop_nested(obj,path)
 
-def has_nested(obj:Container, path: PathType):
-    """Check if a nested path exists.
+def has_nested(obj: Container, path: PathType) -> bool:
+    """Check if a nested path exists in a container.
 
     Args:
-        obj: Container to check
+        obj: Container to query
         path: Either JSONPath string ("$.a[0].b"), tuple of keys, or Path object
 
     Returns:
-        True if path exists, False otherwise
-    """
-    if not is_container(obj):
-        raise TypeError(f"Expected a Mapping or Sequence container, got {type(obj)}")
+        True if the path exists, False otherwise
 
+    Examples:
+        >>> data = {'a': [1, {'b': 2}]}
+        >>> has_nested(data, "$.a[1].b")
+        True
+        >>> has_nested(data, "$.a[1].c")
+        False
+    """
     path_obj = Path.normalize(path)
     return path_obj.try_resolve(obj, default=MISSING) is not MISSING
 
 
-def extract(obj: C, *extracted_keys: Key) -> Iterator[Tuple[Key, Any]]:
+def extract(obj: Container, *extracted_keys: Key) -> Iterator[Tuple[Key, Any]]:
     """
     Extract specified keys from a container, preserving the original order.
-    
+
     Args:
         obj (Mapping or Sequence): The source container.
         *extracted_keys (str): Keys to extract.
@@ -249,10 +272,10 @@ def extract(obj: C, *extracted_keys: Key) -> Iterator[Tuple[Key, Any]]:
     return ((key, obj[key]) for key in keys(obj) if key in ek)
 
 
-def exclude(obj: C, *excluded_keys: Key) -> Iterator[Tuple[Key, Any]]:
+def exclude(obj: Container, *excluded_keys: Key) -> Iterator[Tuple[Key, Any]]:
     """
     Exclude specified keys from a container, preserving the original order.
-    
+
     Args:
         obj (Mapping or Sequence): The source container.
         *excluded_keys (str): Keys to exclude.
@@ -265,6 +288,9 @@ def exclude(obj: C, *excluded_keys: Key) -> Iterator[Tuple[Key, Any]]:
 
     ek = set(excluded_keys)
     return ((key, obj[key]) for key in keys(obj) if key not in ek)
+
+
+CallbackFn = Callable[[Any], Any]
 
 def walk(
     obj: Container,
@@ -308,7 +334,7 @@ def walk(
                 yield path, callback(obj) if callback is not None else obj
 
     yield from _walk(obj, Path())
-    
+
 def walked(
     obj: Container,
     callback: Optional[CallbackFn] = None,
@@ -334,7 +360,7 @@ def walked(
         {Path($.a[0]): 1, Path($.a[1].b): 2, Path($.c): 3}
     """
     return dict(walk(obj, callback=callback, filter=filter, excluded=excluded))
- 
+
 
 def first_keys(walked: Dict[Path, Any]) -> Set[Key]:
     """Return all the first keys encountered in walked paths.
@@ -377,7 +403,7 @@ def unwalk(walked: Dict[Path, Any]) -> MutableContainer:
         walked: A Path:value flattened dictionary
 
     Returns:
-        Reconstructed nested list or dict structure
+        Reconstructed nested structure with exact container types preserved
 
     Examples:
         >>> walked = {Path($.a[0]): 1, Path($.a[1].b): 2, Path($.c): 3}
@@ -388,29 +414,29 @@ def unwalk(walked: Dict[Path, Any]) -> MutableContainer:
         ['a', 'b', 'c']
     """
     # Determine root container type
-    # Strategy 1 (preferred): Check the first Path's first component's container_type
-    #   - If 'sequence': root was definitely a list/sequence (e.g., from walk() or JSONPath "$[0]")
-    #   - If 'mapping': root was definitely a dict/mapping (e.g., from walk() or JSONPath "$.key")
-    # Strategy 2 (fallback): If container_type is 'unknown' (e.g., from tuple paths),
-    #   use the is_seq_based() heuristic to check if first keys are sequential integers (0,1,2...)
-    #
-    # This approach leverages the metadata preserved by Path objects to avoid relying on
-    # heuristics when possible, making reconstruction more reliable and efficient.
+    # Strategy: Check the first Path's first component's container_class
+    #   - If we have a container_class: use it to create the root container
+    #   - If container_class is None: fallback to heuristic (check if keys are sequential integers)
 
     if walked:
         # Get first path
         first_path = next(iter(walked.keys()))
 
-        # If path has components, check the first component's container_type
+        # If path has components, check the first component's container_class
         if first_path.components:
             first_component = first_path.components[0]
-            # Direct detection via container_type metadata
-            if first_component.container_type == 'sequence':
-                base = []
-            elif first_component.container_type == 'mapping':
-                base = {}
+            # Direct detection via container_class metadata
+            if first_component.container_class is not None:
+                try:
+                    base = first_component.container_class()
+                except TypeError:
+                    # Container class needs arguments, fall back to dict/list
+                    if issubclass(first_component.container_class, Sequence):
+                        base = []
+                    else:
+                        base = {}
             else:
-                # container_type is 'unknown' - fallback to heuristic
+                # container_class is None (ambiguous) - fallback to heuristic
                 base = [] if is_seq_based(walked) else {}
         else:
             # Empty path (root only) - shouldn't happen in practice
@@ -465,71 +491,74 @@ def diff_nested(
     Examples:
         >>> a = {"x": 1, "y": {"z": 2}}
         >>> b = {"x": 1, "y": {"z": 3}, "w": 4}
-        >>> diff_nested(a, b)
-        {Path($.y.z): (2, 3), Path($.w): (MISSING, 4)}
+        >>> diff = diff_nested(a, b)
+        >>> diff[Path($.y.z)]
+        (2, 3)
+        >>> diff[Path($.w)]
+        (MISSING, 4)
     """
-    diffs: Dict[Path, Tuple[Any, Any]] = {}
+    diffs = {}
 
     if is_container(obj1) and is_container(obj2):
-        keys1 = set(keys(obj1))
-        keys2 = set(keys(obj2))
-        all_keys = keys1.union(keys2)
+        if isinstance(obj1, Mapping) and isinstance(obj2, Mapping):
+            all_keys = set(keys(obj1)) | set(keys(obj2))
+            for key in all_keys:
+                new_path = path.add_key(key, container=obj1 if has_key(obj1, key) else obj2)
+                val1 = obj1.get(key, MISSING) if isinstance(obj1, dict) else (obj1[key] if has_key(obj1, key) else MISSING)
+                val2 = obj2.get(key, MISSING) if isinstance(obj2, dict) else (obj2[key] if has_key(obj2, key) else MISSING)
 
-        # Determine container type for path components
-        container = obj1 if keys1 else obj2
-
-        for key in all_keys:
-            component = PathKey.from_key(key, container=container)
-            new_path = path.add_component(component)
-            in_obj1 = has_key(obj1, key)
-            in_obj2 = has_key(obj2, key)
-            if in_obj1 and in_obj2:
-                val1, val2 = obj1[key], obj2[key]
-                if is_container(val1) and is_container(val2):
-                    diffs.update(diff_nested(val1, val2, new_path))
-                else:
-                    if val1 != val2:
+                if val1 is MISSING or val2 is MISSING:
+                    diffs[new_path] = (val1, val2)
+                elif val1 != val2:
+                    if is_container(val1) and is_container(val2):
+                        nested_diffs = diff_nested(val1, val2, new_path)
+                        diffs.update(nested_diffs)
+                    else:
                         diffs[new_path] = (val1, val2)
-            elif in_obj1:
-                diffs[new_path] = (obj1[key], MISSING)
-            elif in_obj2:
-                diffs[new_path] = (MISSING, obj2[key])
+
+        elif isinstance(obj1, Sequence) and isinstance(obj2, Sequence):
+            max_len = max(len(obj1), len(obj2))
+            for idx in range(max_len):
+                new_path = path.add_key(idx, container=obj1 if idx < len(obj1) else obj2)
+                val1 = obj1[idx] if idx < len(obj1) else MISSING
+                val2 = obj2[idx] if idx < len(obj2) else MISSING
+
+                if val1 is MISSING or val2 is MISSING:
+                    diffs[new_path] = (val1, val2)
+                elif val1 != val2:
+                    if is_container(val1) and is_container(val2):
+                        nested_diffs = diff_nested(val1, val2, new_path)
+                        diffs.update(nested_diffs)
+                    else:
+                        diffs[new_path] = (val1, val2)
+        else:
+            # Different container types
+            diffs[path] = (obj1, obj2)
     else:
+        # At least one is not a container
         if obj1 != obj2:
             diffs[path] = (obj1, obj2)
 
     return diffs
 
-def deep_merge(
-    target: MutableContainer,
-    src: Container,
-    conflict_resolver: Optional[Callable[[Any, Any], Any]] = None
-) -> None:
-    """Deeply merge source container into target, modifying target in-place.
-    
-    For mappings:
-    - If a key exists in both and both values are containers, merge recursively
-    - Otherwise, src value overwrites target value (or uses conflict_resolver)
-    
-    For sequences:
-    - Elements are merged by index
-    - If src has more elements, they are appended to target
-    
+
+def deep_merge(target, src, conflict_resolver: Optional[Callable[[Any, Any], Any]] = None):
+    """Deeply merge src into target, modifying target in-place.
+
+    For mappings, merges recursively. For sequences, extends or replaces based on index.
+    Conflicts can be resolved via an optional callback.
+
     Args:
-        target: Mutable container to merge into
-        src: Container to merge from
-        conflict_resolver: Optional function to resolve value conflicts
-            Takes (target_value, src_value), returns resolved value
-        
-    Raises:
-        TypeError: If target and src are incompatible container types
-        
+        target: Target container to merge into (modified in-place)
+        src: Source container to merge from
+        conflict_resolver: Optional function to resolve conflicts (receives target_value, src_value)
+
     Examples:
-        >>> target = {"a": 1, "b": {"x": 1}}
-        >>> src = {"b": {"y": 2}, "c": 3}
+        >>> target = {'a': 1, 'b': {'c': 2}}
+        >>> src = {'b': {'d': 3}, 'e': 4}
         >>> deep_merge(target, src)
         >>> target
-        {'a': 1, 'b': {'x': 1, 'y': 2}, 'c': 3}
+        {'a': 1, 'b': {'c': 2, 'd': 3}, 'e': 4}
     """
     if isinstance(target, MutableMapping) and isinstance(src, Mapping):
         for key, src_value in src.items():

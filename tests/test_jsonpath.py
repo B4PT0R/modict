@@ -11,10 +11,20 @@ import pytest
 from modict._collections_utils._path import (
     PathKey,
     Path,
-    parse_jsonpath,
-    format_path_tuple,
-    _is_simple_identifier
+    is_identifier
 )
+
+# Aliases for backward compatibility with tests
+def parse_jsonpath(jsonpath: str) -> Path:
+    """Alias for Path.from_jsonpath for test compatibility."""
+    return Path.from_jsonpath(jsonpath)
+
+def format_path_tuple(keys: tuple) -> str:
+    """Convert a tuple of keys to a JSONPath string."""
+    path = Path.from_tuple(keys)
+    return path.to_jsonpath()
+
+_is_simple_identifier = is_identifier  # Alias for old name
 
 
 class TestPathKey:
@@ -22,27 +32,43 @@ class TestPathKey:
 
     def test_sequence_component(self):
         """Test creating a sequence component."""
-        comp = PathKey(value=0, container_type="sequence")
+        comp = PathKey(value=0, container_class=list)
         assert comp.value == 0
-        assert comp.container_type == "sequence"
+        assert comp.container_class == list
 
     def test_mapping_component(self):
         """Test creating a mapping component."""
-        comp = PathKey(value='name', container_type="mapping")
+        comp = PathKey(value='name', container_class=dict)
         assert comp.value == 'name'
-        assert comp.container_type == "mapping"
+        assert comp.container_class == dict
 
     def test_unknown_component(self):
         """Test creating an unknown container type component."""
-        comp = PathKey(value='test', container_type="unknown")
+        comp = PathKey(value='test', container_class=None)
         assert comp.value == 'test'
-        assert comp.container_type == "unknown"
+        assert comp.container_class is None
 
     def test_frozen(self):
         """Test that PathKey is immutable."""
-        comp = PathKey(value='name', container_type="mapping")
+        comp = PathKey(value='name', container_class=dict)
         with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
             comp.value = 'other'
+
+    def test_invalid_value_type_raises(self):
+        """PathKey rejects non-str/int values."""
+        with pytest.raises(ValueError):
+            PathKey(value=1.2, container_class=dict)  # type: ignore[arg-type]
+
+    def test_resolve_container_mismatch(self):
+        """Resolving with mismatched container_class raises TypeError."""
+        comp = PathKey(value=0, container_class=list)
+        with pytest.raises(TypeError):
+            comp.resolve({"not": "a list"})
+
+    def test_is_compatible(self):
+        comp = PathKey(value=0, container_class=list)
+        assert comp.is_compatible([1, 2])
+        assert comp.is_compatible({"0": "val"}) is False
 
 
 class TestPath:
@@ -71,6 +97,13 @@ class TestPath:
         assert path.is_root
         assert path.to_tuple() == ()
 
+    def test_equality_and_hash(self):
+        """Paths with same components compare equal and are hashable."""
+        p1 = Path.from_jsonpath('$.a[0].b')
+        p2 = Path.from_tuple(('a', 0, 'b'))
+        assert p1 == p2
+        assert hash(p1) == hash(p2)
+
 
 class TestParseJSONPath:
     """Tests for parse_jsonpath function."""
@@ -79,34 +112,34 @@ class TestParseJSONPath:
         """Test parsing simple key access."""
         path = parse_jsonpath('$.a.b.c')
         assert path.to_tuple() == ('a', 'b', 'c')
-        assert all(c.container_type == 'mapping' for c in path.components)
+        assert all(c.container_class == dict for c in path.components)
 
     def test_array_index(self):
         """Test parsing array index access."""
         path = parse_jsonpath('$.users[0].name')
         assert path.to_tuple() == ('users', 0, 'name')
-        assert path.components[0].container_type == 'mapping'
-        assert path.components[1].container_type == 'sequence'
-        assert path.components[2].container_type == 'mapping'
+        assert path.components[0].container_class == dict
+        assert path.components[1].container_class == list
+        assert path.components[2].container_class == dict
 
     def test_string_key_numeric(self):
         """Test parsing string key that looks like number."""
         path = parse_jsonpath("$.config['0'].value")
         assert path.to_tuple() == ('config', '0', 'value')
-        assert path.components[1].container_type == 'mapping'
+        assert path.components[1].container_class == dict
         assert path.components[1].value == '0'
 
     def test_multiple_array_indices(self):
         """Test parsing multiple consecutive array indices."""
         path = parse_jsonpath('$[0][1][2]')
         assert path.to_tuple() == (0, 1, 2)
-        assert all(c.container_type == 'sequence' for c in path.components)
+        assert all(c.container_class == list for c in path.components)
 
     def test_negative_index(self):
         """Test parsing negative array index."""
         path = parse_jsonpath('$.items[-1]')
         assert path.to_tuple() == ('items', -1)
-        assert path.components[1].container_type == 'sequence'
+        assert path.components[1].container_class == list
         assert path.components[1].value == -1
 
     def test_root_only(self):
@@ -115,16 +148,21 @@ class TestParseJSONPath:
         assert len(path) == 0
         assert path.to_tuple() == ()
 
+    def test_invalid_jsonpath_raises(self):
+        """JSONPath must start with '$'."""
+        with pytest.raises(ValueError):
+            parse_jsonpath("a.b")
+
     def test_mixed_access(self):
         """Test parsing mixed key and index access."""
         path = parse_jsonpath('$.data.items[0].metadata.tags[1]')
         assert path.to_tuple() == ('data', 'items', 0, 'metadata', 'tags', 1)
-        assert path.components[0].container_type == 'mapping'  # data
-        assert path.components[1].container_type == 'mapping'  # items
-        assert path.components[2].container_type == 'sequence'  # 0
-        assert path.components[3].container_type == 'mapping'  # metadata
-        assert path.components[4].container_type == 'mapping'  # tags
-        assert path.components[5].container_type == 'sequence'  # 1
+        assert path.components[0].container_class == dict  # data
+        assert path.components[1].container_class == dict  # items
+        assert path.components[2].container_class == list  # 0
+        assert path.components[3].container_class == dict  # metadata
+        assert path.components[4].container_class == dict  # tags
+        assert path.components[5].container_class == list  # 1
 
 
 class TestFormatPathTuple:
@@ -255,11 +293,11 @@ class TestDisambiguationCases:
 
         assert path.to_tuple() == ('a', 0, 'b')
         assert path.components[0].value == 'a'
-        assert path.components[0].container_type == 'mapping'
+        assert path.components[0].container_class == dict
         assert path.components[1].value == 0
-        assert path.components[1].container_type == 'sequence'  # This is an array index!
+        assert path.components[1].container_class == list  # This is an array index!
         assert path.components[2].value == 'b'
-        assert path.components[2].container_type == 'mapping'
+        assert path.components[2].container_class == dict
 
     def test_d2_dict_with_int_key(self):
         """Test d2: {'a': {0: {'b': 'target'}}} → Direct assignment required
@@ -278,11 +316,11 @@ class TestDisambiguationCases:
 
         assert path.to_tuple() == ('a', '0', 'b')
         assert path.components[0].value == 'a'
-        assert path.components[0].container_type == 'mapping'
+        assert path.components[0].container_class == dict
         assert path.components[1].value == '0'  # String '0'
-        assert path.components[1].container_type == 'mapping'  # This is a string key!
+        assert path.components[1].container_class == dict  # This is a string key!
         assert path.components[2].value == 'b'
-        assert path.components[2].container_type == 'mapping'
+        assert path.components[2].container_class == dict
 
     def test_disambiguation_formatting(self):
         """Test that format_path_tuple disambiguates correctly."""
@@ -301,16 +339,16 @@ class TestDisambiguationCases:
         """Test that parse_jsonpath disambiguates correctly."""
         # Array index
         path1 = parse_jsonpath('$.a[0].b')
-        assert path1.components[1].container_type == 'sequence'
+        assert path1.components[1].container_class == list
         assert path1.components[1].value == 0
 
         # String key
         path2 = parse_jsonpath("$.a['0'].b")
-        assert path2.components[1].container_type == 'mapping'
+        assert path2.components[1].container_class == dict
         assert path2.components[1].value == '0'
 
         # Different types!
-        assert path1.components[1].container_type != path2.components[1].container_type
+        assert path1.components[1].container_class != path2.components[1].container_class
 
 
 class TestEdgeCases:
@@ -326,7 +364,7 @@ class TestEdgeCases:
         """Test many consecutive indices."""
         path = parse_jsonpath('$[0][1][2][3][4]')
         assert path.to_tuple() == (0, 1, 2, 3, 4)
-        assert all(c.container_type == 'sequence' for c in path.components)
+        assert all(c.container_class == list for c in path.components)
 
     def test_unicode_keys(self):
         """Test Unicode characters in keys."""
@@ -338,16 +376,16 @@ class TestEdgeCases:
         """Test very large array index."""
         path = parse_jsonpath('$.items[999999]')
         assert path.components[1].value == 999999
-        assert path.components[1].container_type == 'sequence'
+        assert path.components[1].container_class == list
 
     def test_single_key_path(self):
         """Test single key access."""
         path = parse_jsonpath('$.name')
         assert path.to_tuple() == ('name',)
-        assert path.components[0].container_type == 'mapping'
+        assert path.components[0].container_class == dict
 
     def test_single_index_path(self):
         """Test single index access."""
         path = parse_jsonpath('$[0]')
         assert path.to_tuple() == (0,)
-        assert path.components[0].container_type == 'sequence'
+        assert path.components[0].container_class == list

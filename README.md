@@ -1,587 +1,803 @@
-# modict - The Swiss Army Knife of Python Data Structures
+# modict
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+`modict` (short for 'model dict' or 'modern dict') is a modern, dict-first data structure designed to interop nicely with Pydantic models.
 
-**modict** is a sophisticated, hybrid data structure that combines the simplicity of Python dictionaries with the power of dataclasses and the robustness and runtime typechecking capabilities of Pydantic models. It's designed to be the versatile tool you'll want to use in every project for handling structured data.
+It’s a `dict` subclass with an optional model-like layer (typed fields, factories, validators, computed values, JSON Schema export) and easy class-level conversion to/from Pydantic Models.
 
-## 🎯 Philosophy & Goals
+Core philosophy: keep `dict` ergonomics and compatibility, gradually opt into stronger model semantics when you want them, and eventually convert to an actual Pydantic model where it matters.
 
-**modict** bridges the gap between different Python data paradigms:
+Where it sits compared to Pydantic:
 
-- **📚 Dict-like**: Native dictionary inheritance with full compatibility - modicts ARE dicts!
-- **🏗️ Dataclass-like**: Type annotations and structured field definitions  
-- **🛡️ Pydantic-like**: Runtime validation, type coercion, custom validators, and computed properties
-- **🔧 Developer-friendly**: Intuitive API that "just works" for common patterns
-- **100% standard library** - No external dependencies, all is coded from scratch including the typechecker and coercion engine
+- `modict` is best when you want a **real `dict`** (all familiar dict methods, native MutableMapping interface, code expecting dict instances) and only need **lightweight, opt-in modeling** on top.
+- Pydantic is best when you want a **pure “model” abstraction** (`BaseModel`), strong tooling/ecosystem, advanced Model features, and you don’t need `dict` subclass semantics.
 
-### Why modict?
+In practice, for many basic use cases (a small typed container, a couple of defaults/validators/computed properties, light validation, JSON/schema output), the two are **roughly interchangeable**. The real differences tend to show up in more advanced scenarios: ecosystem/tooling, strict contract modeling, serialization knobs, and whether you want to stay dict-first (`modict`) or model-first (Pydantic).
 
-```python
-# Traditional approaches require choosing between flexibility and structure
-data = {"name": "Alice", "age": 30}           # Dict: flexible but unstructured
+`modict` makes it so that **you don't have to choose**. Start coding with `modict` as a drop-in replacement of `dict`, add hints/validators/computed as you go, and convert to Pydantic at API/SDK boundaries if you need to.
 
-@dataclass
-class User: name: str; age: int               # Dataclass: structured but rigid
+**Pros / cons (high level)**
 
-class User(BaseModel): name: str; age: int    # Pydantic: powerful but heavy
+`modict` pros:
+- Drop-in `dict` behavior + attribute access (no wrapper object).
+- Incremental adoption: start dict-first, add hints/validators/computed as needed.
+- Built-in nested path utilities (`Path`/JSONPath, `get_nested`/`set_nested`, `walk`/`unwalk`) for working with arbitrary nested data.
+- clean `modict` -> Pydantic interop for class-level conversion.
 
-# modict: Best of all worlds
-class User(modict):
-    name: str
-    age: int = 25
+`modict` cons:
+- Smaller ecosystem than Pydantic (fewer integrations, conventions, docs, plugins).
+- Model layer is intentionally minimal; some advanced Pydantic behaviors don’t have 1:1 equivalents.
+- Pydantic -> `modict` interop is best-effort (especially for computed/deps and Pydantic-only features).
+- Type checking/coercion is implemented in pure Python (no Rust-backed speedups).
 
-user = User(name="Alice")                   # ✅ Structured
-user.age                                    # 25 ✅ Default value
-user.email = "alice@email.com"              # ✅ Flexible  
-user['phone'] = "123-456-7890"              # ✅ Dict-compatible
-isinstance(user,dict)                       # True (still a dict!)
-```
+Pydantic pros:
+- Very mature validation/serialization ecosystem and widespread integration.
+- Clear model semantics (`BaseModel`) with strong schema generation and tooling.
 
-## 🚀 Key Features
+Pydantic cons (in a `dict`-centric codebase):
+- Not a `dict` subclass; no native `update`, `setdefault`, etc. bridging to/from mappings is explicit.
+- Model usage can be heavier than needed when you mainly want “a dict with model-like capabilities”.
 
-### Core Capabilities
-- **Full dict inheritance** - All native dict methods work seamlessly.
-- **Attribute-style access** - `obj.key` and `obj['key']` both work
-- **Type annotations** - Optional runtime validation with a powerful type validation and coercion system
-- **Recursive conversion**
-  - Explicit: `modict.convert()` / `.to_modict()` for full deep conversion
-  - Automatic: `auto_convert=True` (default) converts nested dicts to `modict` on first access
-- **JSON-first design** - Built-in JSON serialization/deserialization
-- **JSONPath support (RFC 9535)** - Unambiguous nested access with JSONPath strings, tuple paths, or Path objects
-  - Disambiguates array indices `[0]` from string keys `['0']`
-  - Path objects preserve container type metadata for round-trip conversion
+**Use cases (when to pick what)**
 
-### Advanced Features
-- **Computed properties** - Dynamic values with dependency tracking
-- **Custom validators** - Field-level validation and transformation
-- **Type coercion** - Intelligent type conversion system
-- **Deep operations** - Merge, diff, walk through nested structures
-- **Field extraction** - Select/exclude keys with simple methods
+`modict` shines when:
+- You want **plasticity while prototyping**: start with free-form data, progressively add hints/validators/computed as your shape stabilizes.
+- You need a **dict-first internal representation** for config and data manipulation (configs, JSON-like payloads, ETL/transform pipelines) and you want to keep that surface area.
+- You need ergonomic nested manipulation (JSONPath/`Path`, `get_nested`/`set_nested`, `walk`/`unwalk`, deep `diffing`/`comparison`) without introducing a separate model layer everywhere.
+- You want “some structure” (types/validators/computed/schema) but still allow extra keys and mutable updates during processing.
+- You want to interop with Pydantic at boundaries (API/SDK layer) but keep a dict-first representation internally.
 
-## 📦 Installation
+Pydantic shines when:
+- You need a **clear data contract** and rich validation/serialization options for **API communication** (request/response models, SDKs, schemas).
+- You want strict-ish model semantics and a large ecosystem of integrations (FastAPI, settings, plugins, community conventions).
+- Validation/schema generation is the primary goal and you don’t need `dict` subclass behavior.
+- You’re building an API or SDK where models are a public contract and stability/tooling matter more than dict ergonomics.
+
+## Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Use Cases](#use-cases-when-to-pick-what)
+- [Path-Based Tools](#path-based-tools)
+- [Core Concepts](#core-concepts)
+- [Field Definition](#field-definition)
+- [Factories](#factories)
+- [Validators](#validators)
+- [Computed Fields](#computed-fields)
+- [Validation Pipeline](#validation-pipeline)
+- [Configuration (Deep Dive)](#configuration-deep-dive)
+- [Aliases](#aliases)
+- [Type Checking & Coercion](#type-checking--coercion)
+- [Serialization](#serialization)
+- [JSON Schema](#json-schema)
+- [Deep Conversion & Deep Ops](#deep-conversion--deep-ops)
+- [Pydantic Interop (Optional)](#pydantic-interop-optional)
+- [Package Tour (Internal Modules)](#package-tour-internal-modules)
+- [Public API Reference](#public-api-reference)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Installation
 
 ```bash
 pip install modict
 ```
 
-## 🏃‍♂️ Quick Start
+Requirements:
+- Python 3.10+
+- JSONPath support relies on `jsonpath-ng` (the only dependency of the package!)
+- Pydantic interoperability is optional (only needed if you call `from_model()` / `to_model()`)
 
-### Basic Usage
+## Quick Start
+
+### Use it as a dict (default)
 
 ```python
 from modict import modict
 
-# Create from dict or keyword arguments
-user = modict({"name": "Alice", "age": 30})
-user = modict(name="Alice", age=30)
+m = modict({"user": {"name": "Alice"}, "count": 1})
 
-# Attribute and dict-style access
-print(user.name)        # "Alice"
-print(user['age'])      # 30
+assert m["count"] == 1
+assert m.user.name == "Alice"       # attribute access for keys
 
-# Add new fields dynamically
-user.email = "alice@email.com"
-user['phone'] = "123-456-7890"
+m.extra = 123                       # extra keys are allowed by default
+assert isinstance(m, dict)          # True: modict is a real dict
 ```
 
-### Structured Classes
+### Define a typed modict class with defaults
 
 ```python
 from modict import modict
-from typing import List, Optional
+
+class User(modict):
+    name: str            # annotation-only: not required, but validated/coerced if provided
+    age: int = 25        # default value
+    country: str = "FR"  # another default (not passed at init)
+
+u = User({"name": "Alice", "age": "30"})
+assert u.age == 30                  # best-effort coercion unless strict=True
+assert u.country == "FR"
+```
+
+Tip: Annotated fields without defaults are not required; they mainly provide type validation/coercion when the key is present. Annotations and regular class defaults are enough for most fields. Use `modict.field(...)` later when you need more control (constraints, aliases, metadata).
+
+## Path-Based Tools
+
+`modict` comes with a small, consistent path system for reading/writing nested structures (including inside lists), plus a `Path` object for disambiguation and introspection.
+
+### Supported path formats
+
+You can target nested values using:
+- **JSONPath strings** (RFC 9535): `$.users[0].name`
+- **Tuples** of keys/indices: `("users", 0, "name")`
+- **`Path` objects**: `Path.from_jsonpath("$.users[0].name")`
+
+JSONPath strings must start with `$`. Legacy dot-notation (like `"users.0.name"`) is rejected to avoid ambiguity (see `MIGRATION.md`).
+
+### The `Path` object
+
+`Path` is a parsed, strongly-typed representation of a nested path.
+
+```python
+from modict import Path
+
+p = Path.from_jsonpath("$.users[0].name")
+assert p.to_tuple() == ("users", 0, "name")
+assert p.to_jsonpath() == "$.users[0].name"
+```
+
+Internally, a `Path` is a tuple of `PathKey` components. Each component carries:
+- the **key/index** (`"users"`, `0`, `"name"`)
+- the **origin container class** (`dict`, `list`, …) when it can be inferred (`container_class`), which lets `walk()` → `unwalk()` preserve container types.
+
+`Path.normalize(...)` (used by nested helpers) accepts JSONPath strings, tuples, or `Path` objects and returns a `Path`.
+
+### Nested operations
+
+```python
+from modict import modict
+
+m = modict({"user": {"name": "Alice"}})
+
+m.get_nested("$.user.name")           # "Alice"
+m.set_nested("$.user.age", 30)
+m.has_nested("$.user.age")            # True
+m.pop_nested("$.user.age")            # 30
+```
+
+### Paths in deep traversal
+
+- `walk()` yields `(Path, value)` leaf pairs (paths are `Path` objects).
+- `walked()` returns a `{Path: value}` mapping.
+- `unwalk(...)` reconstructs a nested structure from `{Path: value}`, preserving container classes when possible.
+
+## Core Concepts
+
+- `modict` is a real `dict`: it supports standard dict operations and behaves like a mutable mapping.
+- A `modict` *class* can declare fields with type annotations + `modict.field(...)`.
+- The model-like behavior is controlled by the `_config` class attribute (a `modictConfig` dataclass):
+
+```python
+
+class User(modict):
+    _config = modict.config(extra="allow")  # see "Configuration (Deep Dive)" for full reference
+
+```
+
+## Field Definition
+
+The recommended public entry-point is `modict.field(...)`:
+
+```python
+modict.field(
+    default=MISSING,
+    hint=None,         # None = use class annotation when provided
+    required=False,    # only required when explicitly True
+    metadata=None,     # docs / schema metadata (no runtime semantics)
+    constraints=None,  # JSON-Schema-like constraints (enforced + exported)
+    aliases=None,      # input aliases / serialization alias
+    validators=None,   # internal: used by the metaclass when collecting @modict.validator(...)
+)
+```
+
+Example (explicit defaults + constraints):
+
+```python
+from modict import modict, MISSING
+
+class User(modict):
+    name: str = modict.field(default=MISSING, required=True)
+    age = modict.field(default=25, constraints={"ge": 0}, hint=int)
+
+u = User({"name": "Alice", "age": "30"})
+assert u.age == 30
+```
+
+Note: if you pass `hint=...` explicitly in `modict.field(...)`, it takes precedence over the class annotation.
+
+### `metadata` (documentation-only)
+
+`metadata` is for documentation/schema hints (not validation). Common keys:
+- `title`: str
+- `description`: str
+- `examples`: any JSON-serializable value (often a list)
+- `deprecated`: bool
+
+### `constraints` (validation + JSON Schema)
+
+Constraints are enforced at runtime and exported in `json_schema()`:
+- numbers: `gt`, `ge`, `lt`, `le`, `multiple_of`
+- strings / sized containers: `min_length`, `max_length`, `pattern`
+
+```python
+class Product(modict):
+    sku: str = modict.field(constraints={"pattern": r"^[A-Z]{3}-\\d{4}$"})
+    price: float = modict.field(constraints={"gt": 0})
+
+Product({"sku": "ABC-0001", "price": 9.99})
+```
+
+## Factories
+
+Use `modict.factory(callable)` to define **dynamic defaults** (a new value for every instance), similar to Pydantic’s `default_factory`.
+
+```python
+from modict import modict
 
 class User(modict):
     name: str
-    age: int = 25
-    email: Optional[str] = None
-    tags: List[str] = modict.factory(list)  # Factory for mutable defaults
+    tags: list[str] = modict.factory(list)  # new list per instance
 
-# Type-safe creation
-user = User(name="Bob", age=35)
-print(user.age)         # 35
-print(user.tags)        # []
+u1 = User(name="Alice")
+u2 = User(name="Bob")
+u1.tags.append("python")
+assert u2.tags == []
 ```
 
-### Nested Structures & JSONPath Access
+## Validators
 
-**modict** supports [JSONPath (RFC 9535)](https://www.rfc-editor.org/rfc/rfc9535.html) for unambiguous nested access:
+### Field validators
 
-```python
-# Automatic recursive conversion
-data = modict({
-    "users": [
-        {"name": "Alice", "profile": {"city": "Paris"}},
-        {"name": "Bob", "profile": {"city": "Lyon"}}
-    ],
-    "settings": {"theme": "dark"}
-})
-
-# JSONPath-based access (RFC 9535)
-print(data.get_nested("$.users[0].name"))              # "Alice"
-data.set_nested("$.users[0].profile.country", "France")
-print(data.has_nested("$.settings.theme"))             # True
-
-# JSONPath disambiguates array indices from string keys
-data.set_nested("$.config['0'].value", "string key")   # String key '0'
-data.set_nested("$.items[0].value", "array index")     # Array index 0
-
-# Alternative: tuple paths (auto-converted to Path objects internally)
-print(data.get_nested(("users", 0, "name")))           # "Alice"
-
-# Chained attribute access also works
-# (Only if auto_convert=True (default) - see below about config)
-print(data.users[0].profile.city)                      # "Paris"
-```
-
-**Path Objects**: Methods like `walk()` return `Path` objects that preserve container type information (mapping vs sequence), enabling proper round-trip conversion and disambiguation between integer keys and array indices.
-
-## 💫 Advanced Features
-
-### Computed Properties
-
-```python
-class Calculator(modict):
-    a: float = 0
-    b: float = 0
-    
-    @modict.computed(cache=True, deps=['a', 'b'])
-    def sum_ab(self):
-        print("Computing sum...")
-        return self.a + self.b
-    
-    @modict.computed(cache=True, deps=['sum_ab'])  # Cascading dependencies
-    def doubled_sum(self):
-        return self.sum_ab * 2
-
-calc = Calculator(a=10, b=20)
-print(calc.sum_ab)         # "Computing sum..." → 30
-print(calc.sum_ab)         # 30 (cached)
-calc.a = 15                # Invalidates cache automatically
-print(calc.sum_ab)         # "Computing sum..." → 35
-print(calc.doubled_sum)    # 70
-```
-
-### Custom Validators
-
-```python
-class Profile(modict):
-    email: str
-    age: int
-    
-    @modict.check('email')
-    def validate_email(self, value):
-        """Clean and validate email addresses"""
-        email = value.lower().strip()
-        if '@' not in email:
-            raise ValueError("Invalid email format")
-        return email
-    
-    @modict.check('age')  
-    def validate_age(self, value):
-        """Ensure age is reasonable"""
-        age = int(value)
-        if age < 0 or age > 150:
-            raise ValueError("Invalid age range")
-        return age
-
-profile = Profile(email="  ALICE@EMAIL.COM  ", age="30")
-print(profile.email)  # "alice@email.com" (cleaned)
-print(profile.age)    # 30 (converted to int)
-```
-
-### Deep Operations
-
-```python
-# Deep merging
-network_config = modict({"db": {"host": "localhost", "port": 5432}})
-overrides = {"db": {"port": 3306, "ssl": True}}
-network_config.merge(overrides)
-# Result: {"db": {"host": "localhost", "port": 3306, "ssl": True}}
-
-# Walking through nested structures (returns Path objects)
-data = modict({"users": [{"name": "Alice"}, {"name": "Bob"}]})
-for path, value in data.walk():
-    print(f"{path}: {value}")
-# Output (Path objects with JSONPath representation):
-# $.users[0].name: Alice
-# $.users[1].name: Bob
-
-# Flattened view (Dict[Path, Any])
-flat = data.walked()
-# {Path($.users[0].name): "Alice", Path($.users[1].name): "Bob"}
-# Path objects can be converted to strings: str(path) or path.to_jsonpath()
-```
-
-### JSONPath & Path Objects
-
-**modict** uses [JSONPath (RFC 9535)](https://www.rfc-editor.org/rfc/rfc9535.html) to provide unambiguous access to nested structures:
+Use `@modict.validator(field_name, mode="before"|"after")` to validate and/or transform a single field.
 
 ```python
 from modict import modict
 
-data = modict({
-    "items": [{"id": 1}, {"id": 2}],
-    "config": {"0": "string key", 1: "int key"}
-})
+class User(modict):
+    email: str
 
-# Array index (integer in bracket notation)
-data.get_nested("$.items[0].id")        # 1 - accesses items[0]
+    @modict.validator("email")
+    def normalize_email(self, value):
+        return value.strip().lower()
 
-# String key (quoted in bracket notation)
-data.get_nested("$.config['0']")        # "string key" - accesses config['0']
-
-# Note: Integer keys in dicts cannot be represented in JSONPath
-# Use direct access: data.config[1] or data['config'][1]
+u = User(email="  ALICE@EXAMPLE.COM ")
+assert u.email == "alice@example.com"
 ```
 
-**Path Objects**: All path-returning methods (`walk()`, `walked()`, `diff()`) now return `Path` objects instead of strings. Path objects:
+### Model validators (cross-field invariants)
 
-- Preserve container type information (mapping vs sequence)
-- Enable proper round-trip conversion
-- Support multiple representations:
+Use `@modict.model_validator(mode="before"|"after")` for multi-field checks.
+In `mode="after"`, the instance is already populated and validated field-by-field.
 
 ```python
-from modict._collections_utils import Path
+from modict import modict
 
-# Create Path objects
-path1 = Path.from_jsonpath("$.users[0].name")
-path2 = Path.from_tuple(('users', 0, 'name'))
-path3 = Path.normalize("$.users[0].name")  # Accepts string, tuple, or Path
+class Range(modict):
+    start: int
+    end: int
 
-# Convert between representations
-print(path1.to_jsonpath())     # "$.users[0].name"
-print(path1.to_tuple())        # ('users', 0, 'name')
-print(str(path1))              # "$.users[0].name"
-
-# Path components preserve metadata
-for component in path1.components:
-    print(f"{component.value}: {component.container_type}")
-# Output:
-# users: mapping
-# 0: sequence
-# name: mapping
+    @modict.model_validator(mode="after")
+    def check_order(self):
+        if self.start > self.end:
+            raise ValueError("start must be <= end")
 ```
 
-**Breaking Change**: In modict 0.2.0+, `walk()` and `walked()` return Path objects instead of strings. To convert back to strings:
+## Computed Fields
+
+Computed fields are virtual values evaluated on access.
 
 ```python
-# Old behavior (modict < 0.2.0)
-for path_str, value in data.walk():
-    print(f"{path_str}: {value}")  # path_str was a string
+from modict import modict
 
-# New behavior (modict >= 0.2.0)
-for path, value in data.walk():
-    print(f"{path}: {value}")           # path is a Path object (str() is automatic)
-    print(f"{path.to_jsonpath()}: {value}")  # Explicit JSONPath string
+class Calc(modict):
+    a: int
+    b: int
+
+    @modict.computed(cache=True, deps=["a", "b"])
+    def sum(self) -> int:
+        return self.a + self.b
+
+c = Calc(a=1, b=2)
+assert c.sum == 3
+c.a = 10
+assert c.sum == 12  # cache invalidated because "a" changed
 ```
 
-## 🛠️ Configuration Options
-
-The cassmethod `modict.config` allows you to customize the behavior of your modict subclass.
-It returns an `modictConfig` object (dataclass) that you may pass as the `_config` class variable or your modict.
+Inline (non-decorator) form:
 
 ```python
-class MyModict(modict):
+from modict import modict
+
+class Calc(modict):
+    a: int
+    b: int
+    sum = modict.computed(lambda m: m.a + m.b, cache=True, deps=["a", "b"])
+```
+
+Inline “dict value” form (no subclass):
+
+```python
+from modict import modict
+
+m = modict({"a": 1, "b": 2})
+m["sum"] = modict.computed(lambda m: m.a + m.b)
+assert m.sum == 3
+```
+
+Notes:
+- computed values are stored as `Computed` objects inside the dict and evaluated via `__getitem__`
+- returned values still go through the validation pipeline (type checks, constraints, JSON, …) when enabled
+- invalidation semantics:
+  - `deps=None` (default): invalidate on any key change
+  - `deps=[...]`: invalidate only when one of those keys changes (can include other computed names)
+  - `deps=[]`: never invalidate automatically
+
+Manual invalidation:
+
+If you use `deps=[]` (or if updates happen outside of `modict` assignment hooks), you can invalidate caches explicitly:
+
+```python
+from modict import modict
+
+m = modict({"a": 1, "b": 2})
+m["sum"] = modict.computed(lambda m: m.a + m.b, cache=True, deps=[])
+
+_ = m.sum  # cached
+m.a = 10   # deps=[] -> no auto invalidation
+assert m.sum == 3
+
+m.invalidate_computed("sum")
+assert m.sum == 12
+
+# or invalidate everything:
+m.invalidate_computed()
+```
+
+## Validation Pipeline
+
+The pipeline is controlled by `_config.check_values`:
+- `check_values="auto"` (default): enabled when the class looks model-like (hints/validators/config/constraints).
+- `check_values=True`: always enabled.
+- `check_values=False`: bypassed (pure dict behavior).
+
+Related config flags:
+- `strict`: when `True`, no coercion is attempted.
+- `validate_assignment`: validate on `__setitem__`/`__setattr__`.
+- `use_enum_values`: when `True`, enum values are stored/validated as `.value`.
+- `enforce_json`: when `True`, values must be JSON-serializable (encoders can help).
+
+When enabled, validation is applied:
+- eagerly at initialization (`__init__` → `validate()`)
+- optionally on assignment (`validate_assignment=True`)
+- on reads of computed fields (`__getitem__` computes then validates the returned value)
+
+Order of operations for a field value:
+1. `use_enum_values`: if enabled and the value is an `Enum`, replace with `value.value`
+2. string transforms (optional): `str_strip_whitespace`, `str_to_lower`, `str_to_upper`
+3. field validators in `mode="before"`
+4. coercion (only when `strict=False`)
+5. type check (if the field has a type hint)
+6. field validators in `mode="after"`
+7. type check again (post-validators can still transform)
+8. field constraints (`constraints=...` on the `Field`)
+9. JSON-serializability check (`enforce_json=True`, with optional encoders)
+
+## Configuration (Deep Dive)
+
+All model-like behavior is controlled by the class attribute `_config`, a `modictConfig` dataclass created via `modict.config(...)`.
+
+```python
+class User(modict):
     _config = modict.config(
-        auto_convert=True,          # Auto-convert dicts to modicts in nested sub-containers (upon access)
-        strict=False,               # Strict runtime type checking
-        coerce=False,               # Enable automatic type coercion
-        allow_extra=True,           # Disallow extra attributes
-        enforce_json=False,         # Enforce JSON serializability of values
+        check_values="auto",
+        extra="allow",
+        strict=False,
+        validate_assignment=False,
+        auto_convert=True,
     )
 ```
 
-`auto_convert` controls whether dicts found in nested mutable containers (MutableMappings, MutableSequence) 
-are automatically converted to `modict` (if they aren't already) on first access.
-Note that MutableMappings that are NOT dicts won't be converted, but their content may if they are dicts.
+### Config reference
 
-Subclass configs are properly merged with parent class configs, also supporting multiple inheritance patterns (following MRO order).
+- `check_values`: `True`/`False`/`"auto"`.
+  - `"auto"` enables the pipeline when the class *looks model-like* (has hints/validators/model validators) or when config implies processing (e.g. `extra != "allow"`, `enforce_json=True`, `strict=True`, …).
+- `check_keys`: `True`/`False`/`"auto"`.
+  - Key-level constraints are *structural* checks (presence/allowed-keys/invariants), independent from value validation.
+  - `"auto"` enables key constraints when the model (or instance) declares them (e.g. `extra != "allow"`, `require_all=True`, computed fields, or any field with `required=True`).
+  - When `False`, `modict` behaves more like a plain dict regarding keys: it won’t enforce `required=True`, `require_all=True`, `extra="forbid"/"ignore"`, or computed overwrite/delete protection.
+  - `frozen=True` is always enforced (it is not controlled by `check_keys`).
+
+Example: keep structure strict but skip value coercion/type checking:
 
 ```python
-class Parent(modict):
-    _config = modict.config(strict=True, coerce=False)
+class Msg(modict):
+    _config = modict.config(check_values=False, check_keys=True, extra="forbid")
+    role: str = modict.field(required=True)
+    content: str = modict.field(required=True)
+```
+- `extra`: `"allow"` (default) / `"forbid"` / `"ignore"`.
+  - `"forbid"` raises on unknown keys at init and on assignment.
+  - `"ignore"` drops unknown keys at init, and ignores them on assignment.
+- `strict`: when `True`, disables coercion (type checking still applies when hints exist).
+- `validate_assignment`: when `True`, assignment goes through the full pipeline.
+- `frozen`: when `True`, `__setitem__` / `__delitem__` raise (read-only instances).
+- `auto_convert`: when `True`, values stored inside nested mutable containers are lazily upgraded on access:
+  - `dict` → `modict` (plain `modict`, not your subclass)
+  - nested containers inside lists/tuples/sets/dicts are upgraded as you touch them
+- `enforce_json`: when `True`, values must be JSON-serializable.
+  - `allow_inf_nan` controls whether `NaN`/`Infinity` are allowed when encoding (default: `True`).
+  - `json_encoders` lets you provide `type -> callable` encoders for serialization and `enforce_json=True`.
+- `use_enum_values`: when `True`, enums are normalized to `.value` during validation and serialization.
+- `str_strip_whitespace`, `str_to_lower`, `str_to_upper`: optional Pydantic-like string transformations.
+  - if both `str_to_lower` and `str_to_upper` are `True`, lower takes precedence.
+- `populate_by_name`: when `False` and a field has an alias, input must use the alias (field name is rejected).
+  - `alias_generator`: callable `(field_name: str) -> str` applied at class creation time to fields without explicit aliases.
+  - `validate_default`: when `True`, defaults are type-checked at class creation (skips `Factory`/`Computed`).
+  - `from_attributes`: when `True`, `MyModict(obj)` can read declared fields from `obj.field` attributes (when `obj` is not a mapping).
+- `override_computed`: when `False` (default), prevents overriding/deleting computed fields (and passing initial values for computed fields). Set to `True` to allow it explicitly.
+- `require_all`: when `True`, requires all declared class fields (including computed) to be present at initialization; declared fields cannot be deleted (annotation-only fields become required).
+- `evaluate_computed`: when `True` (default), computed fields are evaluated on access; when `False`, computed fields are treated as raw stored objects (no evaluation).
 
-class Child(Parent):
-    _config = modict.config(coerce=True)  # strict=True, coerce=True (overrides Parent)
+Required vs defaults (dict-first semantics):
+- A class default (e.g. `age: int = 25`) is an *initializer*: it is injected once at construction if missing, but the key is still removable later when `require_all=False`.
+- A field is an invariant only when you opt in to it: set `required=True` on the field (or `require_all=True` on the model) to enforce presence.
 
-class A(modict):
-    _config = modict.config(strict=True)
-    a: int=1
-    value: str="A"
+### Performance / dict-like mode
 
-class B(modict):
-    _config = modict.config(strict=False, coerce=True)
-    b: int=2
-    value: str="B"
+If you want `modict` to behave as close as possible to a plain `dict` (minimal overhead), you can opt out of most advanced features:
 
-class C(A,B):
-    _config = modict.config(allow_extra=False) 
-    # strict=True from A (A overrides B, since A follows B in MRO), 
-    # coerce=True from B
-    # allow_extra=False from C
-
-c = C()
-print(c.a) # 1
-print(c.b) # 2
-print(c.value) # "A" (A overrides B)
-c.a = "3"
-print(c.a) # 3 (coercion enabled)
-
-try:
-    c.a = "invalid" 
-except Exception as e:
-    print(e) # ❌ TypeError (strict mode enabled)
-
-try:
-    c.undefined = "value" 
-except Exception as e:
-    print(e) # ❌ KeyError (extra fields not allowed)
+```python
+class Fast(modict):
+    _config = modict.config(
+        check_values=False,     # skip validation/coercion pipeline
+        check_keys=False,       # skip structural key constraints (required/extra/...)
+        auto_convert=False,     # skip lazy conversion of nested containers on access
+        evaluate_computed=False # treat Computed as raw stored objects
+    )
 ```
 
-### Example
+### Config inheritance / merging
+
+`modict` merges configs across inheritance in a Pydantic-like way:
+- config values explicitly set in a subclass override inherited values
+- when using multiple inheritance, the left-most base wins (for explicitly-set config keys)
+
+## Aliases
+
+Aliases live in `Field.aliases` (not in `metadata`).
+
+Supported keys:
+- `alias`: single alias (common case)
+- `validation_alias`: string or list of strings (accepted input keys)
+- `serialization_alias`: string (used by `model_dump(by_alias=True)`)
+
+Input behavior is controlled by `_config.populate_by_name`:
+- `populate_by_name=False`: if a field has aliases, only aliases are accepted (field name is rejected).
+- `populate_by_name=True`: accept both alias and field name (but never both at once).
 
 ```python
-class StrictConfig(modict):
+class User(modict):
+    _config = modict.config(populate_by_name=False)
+    name: str = modict.field(aliases={"alias": "full_name"})
 
-    _config=modict.config(
-        strict = True          # Enable runtime type checking
-        allow_extra = False    # Disallow undefined fields
-        coerce = True          # Enable type coercion
-    )
+User({"full_name": "Alice"})        # OK
+```
 
+### `alias_generator`
+
+Generate aliases automatically for fields that do not define any explicit alias:
+
+```python
+class User(modict):
+    _config = modict.config(alias_generator=str.upper, populate_by_name=False)
     name: str
-    count: int
 
-config = StrictConfig(name="test", count=42)
-# config.undefined = "value"    # ❌ KeyError (extra fields not allowed)
-# config.count = "32"           # coerced to int (coercion enabled)
-# config.count = "invalid"      # ❌ TypeError (can't be coerced, type checking raises an error)
+User({"NAME": "Alice"})
 ```
 
-## 📄 JSON Integration
+## Type Checking & Coercion
+
+`modict` relies on its internal runtime type system (in `modict/_typechecker/`) for:
+- type checking against annotations (`check_type(hint, value)`)
+- best-effort coercion (`coerce(value, hint)`) when `strict=False`
+- the `@typechecked` decorator for runtime checking of function arguments/return values
+
+This subsystem supports common `typing` constructs (e.g. `Union`, `Optional`, `list[str]`, `dict[str, int]`, `tuple[T, ...]`, ABCs from `collections.abc`, …).
+If coercion fails, the original value is kept; the subsequent type check decides whether it’s accepted (depending on hints and `strict`).
+
+## Serialization
+
+`modict` provides lightweight Pydantic-like serialization helpers.
+
+### `model_dump` / `model_dump_json`
 
 ```python
-
-# JSON-enforced mode
-class JSONConfig(modict):
-
-    _config=modict.config(
-        enforce_json=True
-    )
-
-# Built-in JSON support
-config = JSONConfig.load("config.json")        # Load from file
-config = JSONConfig.loads(json_string)         # Load from string
-
-config.dump("output.json", indent=2)          # Save to file
-json_str = config.dumps(indent=2)             # Convert to string
-
-config.data = {1, 2, 3}   # ❌ ValueError (sets are not JSON-serializable)
+data = u.model_dump(by_alias=True, exclude_none=True)
+json_str = u.model_dump_json(by_alias=True)
 ```
 
-## 🎨 Field Utilities
+Supported options:
+- `by_alias`: use `serialization_alias` then `alias`
+- `exclude_none`: drop keys with `None`
+- `include` / `exclude`: sets of *field names* (not aliases)
+- `encoders`: mapping `type -> callable` (see below)
+
+### JSON encoders
+
+Use encoders to serialize custom types and to satisfy `enforce_json=True`:
 
 ```python
-user = modict(name="Alice", age=30, email="alice@email.com", phone="123-456")
+from datetime import datetime
 
-# Extract specific fields
-basic_info = user.extract('name', 'age')         # {"name": "Alice", "age": 30}
-
-# Exclude sensitive fields  
-public_info = user.exclude('email', 'phone')     # {"name": "Alice", "age": 30}
-
-# Rename fields
-user.rename(email='email_address')               # Changes key name
-
-# Deep copy
-backup = user.deepcopy()
+class Event(modict):
+    _config = modict.config(json_encoders={datetime: lambda d: d.isoformat()})
+    ts: datetime
 ```
 
-## 🔄 Conversion & Compatibility
+### `dumps` / `dump`
+
+`dumps()` / `dump()` are thin wrappers around `json.dumps` / `json.dump`, and support:
+- `by_alias`
+- `exclude_none`
+- `encoders`
+
+## JSON Schema
+
+`json_schema()` exports a Draft 2020-12 JSON Schema from a modict class:
 
 ```python
-
-# let's turn auto-conversion off globally (affects all modict instances created after this change)
-modict._config.auto_convert = False
-
-data = {"user": {"name": "Alice"}, "count": 42}
-
-safe_modict = modict(data)            # No auto-conversion
-safe_modict.user.name                # ❌ AttributeError (user is still a dict)
-safe_modict.user["name"]             # "Alice" (works with dict access)
-isinstance(safe_modict.user, modict)  # False (it's a plain dict)
-data["user"] is safe_modict.user     # True (same object)
-
-modict_data = safe_modict.to_modict()  # Deep conversion (in-place on the structure)
-isinstance(modict_data.user, modict)  # True (now it's a modict)
-data["user"] is modict_data.user     # False: user has been converted to a new modict
-modict_data.user.name                # ✅ "Alice" (user is now a modict)
-dict_data = modict_data.to_dict()    # Back to plain dicts
-
-# Factory method for clean conversion
-converted = modict.convert(complex_nested_dict)
-unconverted = modict.unconvert(converted)  # Back to plain dicts
+schema = User.json_schema()
 ```
 
-## ⚠️ Important Behaviors & Limitations
+Notes:
+- `$schema` is always `https://json-schema.org/draft/2020-12/schema`
+- `constraints` are mapped to standard JSON Schema keywords (`minimum`, `multipleOf`, `pattern`, …)
+- `additionalProperties` is emitted only when `extra="forbid"` (diff vs JSON Schema default)
 
-### Descriptor Handling
+## Deep Conversion & Deep Ops
 
-modict distinguishes between **definitions** and **assignments** in class namespaces:
+### Deep conversion
+
+`modict` ships with conversion utilities designed to preserve container identity as much as possible:
+- `modict.convert(obj)`: recursively upgrades `dict` nodes to `modict` (and walks into mutable containers).
+  - root dict becomes your class; nested dicts become plain `modict` unless they were already instances.
+  - `recurse=False` stops recursion when reaching a modict node (used internally for lazy `auto_convert`).
+- `m.to_modict()`: deep conversion of an instance in-place (calls `convert(self)`).
+- `m.to_dict()`: deep un-conversion back to plain containers.
+
+### Deep operations on nested structures
+
+These operations are implemented on top of the `modict._collections_utils` package:
+- `walk()` / `walked()`: flatten a nested structure to `(Path, value)` pairs.
+- `unwalk(walked)`: reconstruct a nested structure from a `{Path: value}` mapping, preserving container classes when possible.
+- `merge(mapping)`: deep, in-place merge (mappings merge by key; sequences merge by index).
+- `diff(mapping)`: deep diff that returns `{Path: (left, right)}` with `MISSING` for absent values.
+- `deep_equals(mapping)`: deep equality by comparing walked representations.
+
+## Pydantic Interop (Optional)
+
+Pydantic interoperability is an **optional feature** that operates at the **class level** (it converts *model classes*, not just instances).
+
+When Pydantic is installed:
+- `modict.from_model(PydanticModel)` converts a Pydantic `BaseModel` class into a new `modict` subclass.
+- `MyModict.to_model()` converts a `modict` subclass into a new Pydantic `BaseModel` class.
+
+This is designed for **bidirectional, best-effort round-trips** (Pydantic v1 and v2 supported).
+
+In practice:
+- `modict → Pydantic` is the “clean” direction: since `modict` is the source of truth, the generated Pydantic model is deterministic for the features `modict` supports.
+- `Pydantic → modict` is inherently **best-effort**: Pydantic has a larger feature surface, and some semantics (especially advanced validation/serialization behaviors) don’t have 1:1 equivalents in a dict-first model.
+
+### What gets converted (best-effort)
+
+- Fields: annotations, defaults, and default factories (`Field(default_factory=...)` ↔ `modict.factory(...)`).
+- Config: common Pydantic-aligned options (`extra`, `strict`, `frozen`, `validate_assignment`, string transforms, aliases-related settings, …).
+- Aliases: `alias`, `validation_alias`, `serialization_alias` where representable.
+- Validators:
+  - field validators (before/after when possible)
+  - model/root validators (before/after when possible)
+- Computed fields:
+  - Pydantic v2 computed fields ↔ `modict` computed fields (best-effort for `cache`/`deps`)
+- Nested models:
+  - referenced `BaseModel` types inside annotations are recursively converted to nested `modict` subclasses (cached to preserve sharing)
+
+Pydantic-only metadata that can’t be expressed directly in `modict` is preserved under `Field._pydantic` so it can be re-emitted when converting back.
+
+### Quick example (class-level conversion)
 
 ```python
-class MyModict(modict):
-    # ✅ DEFINITIONS (stay as class methods)
-    @classmethod
-    def my_classmethod(cls):
-        return "method behavior"
-    
-    @property  
-    def my_property(self):
-        return "property behavior"
-    
-    # ✅ ASSIGNMENTS (become dict fields)
-    external_func = some_external_function        # Stored in dict
-    external_cm = classmethod(external_function)  # Stored in dict (may be non-callable)
+from pydantic import BaseModel, Field
+from modict import modict
 
-obj = MyModict()
-obj.my_classmethod()     # ✅ Works (bound method)
-obj.external_func("x")   # ✅ Works (raw function, no binding)
-obj.external_cm("x")     # ❌ May fail ('classmethod' object not callable)
+class UserModel(BaseModel):
+    name: str
+    tags: list[str] = Field(default_factory=list)
+
+User = modict.from_model(UserModel)        # Pydantic class -> modict class
+UserModel2 = User.to_model(name="UserV2")  # modict class -> Pydantic class
 ```
 
-**Principle**: *Syntax determines behavior*
-- `def`/`@decorator` syntax → Class behavior (Python semantics)
-- `=` assignment syntax → Data storage (user responsibility)
+## Package Tour (Internal Modules)
 
-### Import Limitations
+This section is an overview of the main internal modules and what functionality they implement.
+If you only need the user-facing API, you can skip to [Public API Reference](#public-api-reference).
 
-Imports inside class namespaces are treated as field assignments:
+### `modict/_modict.py` (the `modict` class)
 
-```python
-# ❌ PROBLEMATIC
-class MyModict(modict):
-    import json        # Becomes a 'json' field in the modict
+Core behaviors implemented here:
+- dict subclass with attribute access (`m.key` ↔ `m["key"]`) while keeping Python attributes working
+- validation pipeline (`validate()`, assignment validation, extra handling, constraints)
+- computed fields evaluation and dependency-based cache invalidation
+- lazy nested conversion (`auto_convert`) implemented in `__getitem__`
+- nested ops (`get_nested`, `set_nested`, `pop_nested`, …) backed by JSONPath/`Path`
+- deep ops (`walk`, `walked`, `unwalk`, `merge`, `diff`, `deep_equals`, `deepcopy`)
+- JSON helpers (`loads`, `load`, `dumps`, `dump`, plus `model_dump*`)
 
-    def method(self):
-        return json.dumps(self)  # ❌ NameError: 'json' not defined
+### `modict/_modict_meta.py` (metaclass + field system)
 
-# ✅ RECOMMENDED  
-import json
-class MyModict(modict):
-    # json accessible via module scope
-    pass
-```
+Defines the "model-like layer" that turns a `dict` subclass into something schema/validation aware:
+- `modictMeta`: collects declared fields from `__annotations__` and assigned attributes
+  - supports plain defaults, `modict.field(...)` (`Field`), `modict.factory(...)` (`Factory`), and `@modict.computed(...)` (`Computed`)
+  - collects `@modict.validator(...)` into per-field validators
+  - collects `@modict.model_validator(...)` into model-level validators
+- `modictConfig`: configuration object with explicit-key tracking and inheritance merge semantics
+- `Field`: stores `hint`, `default`, `metadata`, `constraints`, `aliases` (plus an internal `_pydantic` bucket)
+- `Validator` / `ModelValidator`: best-effort signature adapters (modict-style and Pydantic-style callables)
+- `modictKeysView` / `modictValuesView` / `modictItemsView`: dict views that read through `__getitem__` (so computed + lazy conversion + validation happen during iteration)
 
-This limitation rarely affects normal usage of modict as a data structure.
+### `modict/_collections_utils/` (nested structure utilities)
 
-### Memory Considerations
+This package is responsible for paths, nested operations, and deep traversal.
 
-- **Validation overhead**: Type checking and coercion add runtime cost
-- **Computed properties**: Cached values consume additional memory
-- **Recursive conversion**: Deep nesting may impact performance
+- `modict/_collections_utils/_path.py`
+  - `Path` / `PathKey`: JSONPath (RFC 9535) parsing and formatting via `jsonpath-ng`
+  - type-aware path components (`PathKey.container_class`) so `walk()` → `unwalk()` can preserve container types
+  - `Path.normalize(...)` to accept JSONPath strings, tuples, or `Path` objects
+- `modict/_collections_utils/_basic.py`
+  - container-agnostic `get_key` / `set_key` / `has_key` / `keys` / `unroll`
+- `modict/_collections_utils/_advanced.py`
+  - `get_nested` / `set_nested` / `pop_nested` / `del_nested` / `has_nested`
+  - `walk` / `walked` / `unwalk`
+  - `deep_merge` / `diff_nested` / `deep_equals`
+- `modict/_collections_utils/_view.py`
+  - `View`: base class to build custom collection views over mappings or sequences
+- `modict/_collections_utils/_missing.py`
+  - `MISSING`: sentinel to distinguish "missing" from `None`
 
-## 🆚 Comparison with Alternatives
+### `modict/_typechecker/` (runtime typing + coercion)
 
-| Feature | modict | dict | dataclass | Pydantic |
-|---------|-------|------|-----------|----------|
-| Dict compatibility | ✅ Full | ✅ Native | ❌ No | ❌ Limited |
-| Attribute access | ✅ Yes | ❌ No | ✅ Yes | ✅ Yes |
-| Type validation | ✅ Optional | ❌ No | ❌ No | ✅ Yes |
-| Runtime flexibility | ✅ High | ✅ High | ❌ Low | ❌ Medium |
-| Nested structures | ✅ Auto | ❌ Manual | ❌ Manual | ✅ Auto |
-| JSON integration | ✅ Built-in | ❌ Manual | ❌ Manual | ✅ Built-in |
-| Learning curve | 🟡 Medium | 🟢 Low | 🟢 Low | 🔴 High |
-| Performance | 🟡 Good | 🟢 Excellent | 🟢 Excellent | 🟡 Good |
+This subpackage backs the runtime typing API exported by `modict`:
+- `TypeChecker`: checks values against `typing` hints and collection ABCs
+- `Coercer`: best-effort conversions for common hints/containers
+- convenience API: `check_type`, `coerce`, `can_coerce`, `typechecked`
 
-## 📖 Public API Reference
+### `modict/_pydantic_interop.py` (optional Pydantic conversion)
 
-### Core class
-- `modict(**kwargs | mapping)`: dict subclass with attribute access, defaults, validation
-- `modict.config(auto_convert=True, allow_extra=True, strict=False, enforce_json=False, coerce=False)`: build a `modictConfig` for subclasses
-- `modict.factory(callable)`: declare per-instance default factories for fields
-- `modict.check(field_name)`: decorator to attach field validators
-- `modict.computed(func=None, *, cache=False, deps=None)`: decorator/constructor for cached computed fields
+Class-level conversions, with Pydantic v1 and v2 support:
+- `from_pydantic_model(...)`: Pydantic → modict
+  - converts nested `BaseModel` types to nested modict subclasses (with a global cache)
+  - maps a conservative subset of Pydantic Field/Config metadata into `Field.metadata` / `Field.constraints` / `Field.aliases` and preserves extra info under `Field._pydantic`
+  - imports field validators and model validators when possible (mode `before`/`after`)
+  - extracts computed fields (Pydantic v2) and maps them to `Computed` fields (best-effort for `cache`/`deps`)
+- `to_pydantic_model(...)`: modict → Pydantic
+  - recreates `Field(...)` declarations, validators, model validators, and (v2) computed fields
+  - maps modict config back to a Pydantic config, only emitting non-default values
+- `TypeCache`: weak-reference cache for modict ↔ Pydantic class conversions (to preserve sharing and break cycles)
 
-### Instance helpers
-- `.to_modict()`: deep-convert nested dicts into modict instances in place
-- `.to_dict()`: deep-convert modicts back to plain dicts (preserving sharing)
-- `.get_nested(path, default=MISSING)`: fetch nested value via JSONPath string (`"$.a[0].b"`), tuple `('a', 0, 'b')`, or Path object
-- `.set_nested(path, value)`: assign nested value, creating missing levels (supports JSONPath, tuple, or Path)
-- `.del_nested(path)`: delete a nested key/path (supports JSONPath, tuple, or Path)
-- `.pop_nested(path, default=MISSING)`: pop a nested key/path (supports JSONPath, tuple, or Path)
-- `.has_nested(path)`: check existence of a nested path (supports JSONPath, tuple, or Path)
-- `.rename(mapping_or_kwargs)`: rename keys without touching values
-- `.exclude(*keys)`: return a new modict excluding given keys
-- `.extract(*keys)`: return a new modict with only given keys
-- `.walk(callback=None, filter=None, excluded=None)`: iterate leaf paths/values as `(Path, value)` tuples with optional transform/filter
-- `.walked(callback=None, filter=None)`: return `Dict[Path, Any]` of walked paths/values (Path objects as keys)
-- `.merge(mapping)`: deep-merge another mapping into self
-- `.diff(mapping)`: structural diff vs another mapping
-- `.deep_equals(mapping)`: deep equality check vs another mapping
-- `.deepcopy()`: deep-copy preserving type
-- `modict.unwalk(walked)`: reconstruct a nested structure from walked output
-- `.dumps(**json_kwargs)`: serialize to JSON string using `json.dumps`
-- `.dump(fp, **json_kwargs)`: serialize to JSON file-like/path using `json.dump`
-- `modict.loads(json_str, **json_kwargs)`: classmethod JSON string loader returning modict
-- `modict.load(fp, **json_kwargs)`: classmethod JSON file loader returning modict
-- Dict compatibility: `keys()/values()/items()` validated views; `|`/`|=` merge with validation; `copy()`, `popitem()`, `setdefault()` validated dict semantics
+## Public API Reference
 
-### Class/staticmethods
-- `modict.convert(obj)`: recursively upgrade nested dicts to modict, preserving shared references when possible
-- `modict.unconvert(obj, seen=None)`: recursively downgrade modicts to plain dicts
-- `modict.fromkeys(iterable, value=None)`: standard dict API
+This section lists the public symbols exported by `modict` and the main methods on `modict` instances.
 
-### Type utilities (exported from `modict`)
-- `check_type(hint, value)`: validate a value against a type hint (strict)
-- `coerce(value, hint)`: coerce a value to the hinted type when possible
-- `@typechecked`: enforce annotated args/return types at call time on a callable
-- Exceptions: `TypeCheckError`, `TypeCheckException`, `TypeCheckFailureError`, `TypeMismatchError`, `CoercionError`
-- Helpers/metadata: `Coercer`, `TypeChecker`, `__version__`, `__title__`, `__description__`, `__url__`, `__author__`, `__email__`, `__license__`
+### Exports
 
-## 🧠 Typechecker & Coercion
+From `from modict import ...`:
 
-The bundled typechecker/coercion engine supports a broad slice of Python typing:
+- Data structure:
+  - `modict`
+- Field system:
+  - `Field` (advanced; most users should prefer `modict.field(...)`)
+  - `Factory` (advanced; most users should prefer `modict.factory(...)`)
+  - `Computed` (advanced; most users should prefer `@modict.computed(...)`)
+  - `Validator`, `ModelValidator` (advanced; decorators are the typical entry-point)
+- Config:
+  - `modictConfig` (usually created via `modict.config(...)`)
+- JSONPath types:
+  - `Path`, `PathKey`
+- Sentinel:
+  - `MISSING`
+- Pydantic interop cache:
+  - `TypeCache`
+- Type checking / coercion:
+  - `check_type(hint, value)`
+  - `coerce(value, hint)`
+  - `can_coerce(value, hint)`
+  - `typechecked` (decorator)
+  - `TypeChecker`
+  - `Coercer` 
+  - Exceptions: `TypeCheckError`, `TypeCheckException`, `TypeCheckFailureError`, `TypeMismatchError`, `CoercionError`
 
-- **PEP 604 unions**: `int | str`, `list[int] | None`
-- **Typing constructs**: `List[T]`, `Dict[K, V]`, `Tuple[...]`, `Set[...]`, `Optional[...]`, `Union[...]`, `Literal[...]`, `Callable[[...], R]`
-- **Protocols**: runtime-checkable `Protocol` support (attribute presence and callability)
-- **TypedDict**: key/value checking against TypedDict definitions
-- **NewType**: treated as underlying type
-- **Callables**: signature arity/type checks, including `Callable[..., R]` and `Callable[[A, B], R]`
-- **Generics / TypeVars**: parameterized generics with type arguments (e.g., `list[int]`, `dict[str, float]`) and robust TypeVar handling (propagated through nested containers/unions)
-- **Custom classes**: regular `isinstance` semantics, including subclass checks
-- **Nested structures**: deep validation/coercion of containers, preserving shared references
-- **Coercion rules**: best-effort conversions for numbers (`"1"`→`int`), sequences/iterables to typed containers, tuple/list interchange when possible, dict-like sources to typed mappings, and unions (first matching branch wins)
-- **Decorators**: `@typechecked` enforces annotations on args/return at runtime
-- **Config toggles**: per-modict `_config` can enable `strict` (type errors), `coerce` (auto-coercion), and `enforce_json` (JSON-serializable only)
+### `modict` class methods
 
-Limitations: structural protocols without `@runtime_checkable`, detailed variance, and advanced typing constructs (e.g., ParamSpec, TypeVar constraints) aren’t enforced; coercion is best-effort and may leave values unchanged if no safe conversion is found.
+- `modict.config(**kwargs) -> modictConfig`
+- `modict.field(...) -> Field`
+- `modict.factory(callable) -> Factory`
+- `@modict.validator(field_name, mode="before"|"after")`
+- `@modict.model_validator(mode="before"|"after")`
+- `@modict.computed(cache=False, deps=None)`
+- `modict.json_schema(excluded: set[str] | None = None) -> dict`
+- JSON helpers:
+  - `modict.loads(s, **json_kwargs) -> modict`
+  - `modict.load(fp_or_path, **json_kwargs) -> modict`
+- Pydantic interop (optional dependency):
+  - `modict.from_model(PydanticModel, *, name=None, **config_kwargs) -> type[modict]`
+  - `MyModict.to_model(*, name=None, **config_kwargs) -> type[pydantic.BaseModel]`
+- Conversion:
+  - `modict.convert(obj, seen=None) -> Any`
+  - `modict.unconvert(obj, seen=None) -> Any`
+  - `modict.unwalk(walked: dict[Path, Any]) -> Any`
 
-## 🤝 Contributing
+### `modict` instance methods
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+Instance methods keep standard dict behavior, plus:
 
-### Development Setup
+- Validation:
+  - `validate()`
+- Conversion:
+  - `to_modict() -> modict` (deep conversion)
+  - `to_dict() -> dict` (deep unconvert)
+- Serialization:
+  - `model_dump(by_alias=False, exclude_none=False, include=None, exclude=None, encoders=None) -> dict`
+  - `model_dump_json(...) -> str`
+  - `dumps(..., by_alias=False, exclude_none=False, encoders=None) -> str`
+  - `dump(fp_or_path, ..., by_alias=False, exclude_none=False, encoders=None) -> None`
+- Nested operations (JSONPath / tuple / Path):
+  - `get_nested(path, default=MISSING)`
+  - `set_nested(path, value)`
+  - `del_nested(path)`
+  - `pop_nested(path, default=MISSING)`
+  - `has_nested(path) -> bool`
+- Key operations:
+  - `rename(mapping_or_kwargs) -> modict`
+  - `exclude(*keys) -> modict`
+  - `extract(*keys) -> modict`
+- Deep operations:
+  - `merge(mapping) -> modict`
+  - `diff(mapping) -> dict`
+  - `deep_equals(mapping) -> bool`
+  - `deepcopy() -> modict`
+- Walking:
+  - `walk(callback=None, filter=None, excluded=None) -> Iterable[tuple[Path, Any]]`
+  - `walked(callback=None, filter=None) -> dict[Path, Any]`
+- Computed cache:
+  - `invalidate_computed(*names) -> None` (no args = all)
+  - `invalidate_all_computed() -> None`
+
+## Development
 
 ```bash
-git clone https://github.com/your-username/modict.git
-cd modict
-pip install -e .[dev]
-pytest
+python3 -m pytest -q
 ```
 
-## 📜 License
+## Contributing
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Contributions are welcome.
 
-## 🙏 Acknowledgments
+- Please open an issue to discuss larger changes.
+- For pull requests: add/adjust tests under `tests/` and keep `python3 -m pytest -q` green.
+- Local setup: `pip install -e ".[dev]"`.
 
-- Inspired by the flexibility of Python dicts, the structure of dataclasses, and the power of Pydantic
-- Built with modern Python typing and metaclass techniques
-- Community feedback and real-world usage patterns
+See `CONTRIBUTING.md` for details.
 
----
+## License
 
-**modict**: *Because data structures should be both powerful and pleasant to use* 🚀
+MIT. See `LICENSE`.
