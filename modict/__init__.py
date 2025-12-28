@@ -19,6 +19,7 @@ from ._typechecker import (
     coerce,
     can_coerce,
     typechecked,
+    coerced,
 )
 from ._pydantic_interop import TypeCache
 
@@ -49,6 +50,7 @@ __all__ = [
     "coerce",
     "can_coerce",
     "typechecked",
+    "coerced",
     "TypeChecker",
     "TypeCheckError",
     "TypeCheckException",

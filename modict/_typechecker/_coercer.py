@@ -19,6 +19,7 @@ class Coercer:
     def __init__(self, type_checker: TypeChecker):
         self.type_checker = type_checker
         self._coercion_strategies = self._build_coercion_strategies()
+        self._canonical_containers = self._build_canonical_containers()
     
     def coerce(self, value: Any, target_hint: Any) -> Any:
         """
@@ -43,6 +44,12 @@ class Coercer:
         # Forward references (strings) - à résoudre d'abord
         if isinstance(target_hint, str):
             return self._coerce_forward_ref(value, target_hint)
+        elif self.type_checker._is_protocol(target_hint):
+            raise CoercionError(f"Cannot coerce {type(value)} to protocol {target_hint}")
+        elif self.type_checker._is_typeddict(target_hint):
+            return self._coerce_typeddict(value, target_hint)
+        elif self.type_checker._is_newtype(target_hint):
+            return self._coerce_newtype(value, target_hint)
         elif self.type_checker._is_special_form(target_hint):
             return self._coerce_special_form(value, target_hint)
         elif self.type_checker._is_generic_alias(target_hint):
@@ -68,6 +75,11 @@ class Coercer:
             return self._coerce_optional(value, target_hint)
         elif form_name == 'Literal':
             return self._coerce_literal(value, target_hint)
+        elif form_name == 'Annotated':
+            args = get_args(target_hint)
+            if not args:
+                raise CoercionError("Annotated requires at least one type argument")
+            return self.coerce(value, args[0])
         elif form_name == 'Final':
             args = get_args(target_hint)
             if args:
@@ -115,6 +127,16 @@ class Coercer:
             raise CoercionError("Optional requires exactly 1 type argument")
         
         return self.coerce(value, args[0])  # Récursion vers T
+
+    def _coerce_newtype(self, value: Any, target_hint: Any) -> Any:
+        """
+        Coercion pour NewType : coercer vers le supertype puis reconstruire.
+        """
+        supertype = getattr(target_hint, "__supertype__", None)
+        if supertype is None:
+            raise CoercionError(f"Cannot coerce {type(value)} to {target_hint}")
+        coerced = self.coerce(value, supertype)
+        return target_hint(coerced)
     
     def _coerce_literal(self, value: Any, target_hint: Any) -> Any:
         """
@@ -157,6 +179,16 @@ class Coercer:
             return self._coerce_set_like(value, target_hint, origin, args)
         elif checker == self.type_checker._check_tuple_like:
             return self._coerce_tuple_like(value, target_hint, origin, args)
+        elif checker == self.type_checker._check_iterable_like:
+            return self._coerce_iterable_like(value, target_hint, origin, args)
+        elif checker == self.type_checker._check_collection_like:
+            return self._coerce_iterable_like(value, target_hint, origin, args)
+        elif checker == self.type_checker._check_container_like:
+            return self._coerce_container_like(value, target_hint, origin, args)
+        elif checker == self.type_checker._check_iterator_like:
+            return self._coerce_iterator_like(value, target_hint, origin, args)
+        elif checker == self.type_checker._check_callable:
+            raise CoercionError(f"Cannot coerce {type(value)} to callable {target_hint}")
         else:
             # Utiliser l'ABC checker si disponible
             abc_checker = self.type_checker._get_abc_checker(origin)
@@ -171,28 +203,34 @@ class Coercer:
         """
         # D'abord, convertir vers le type de conteneur approprié
         target_type = self.type_checker._origin_to_type(origin)
+        canonical_type = self._canonical_containers.get(target_type, target_type)
+        preserve_type = isinstance(value, target_type) and not isinstance(value, (str, bytes))
+        preferred_type = type(value) if preserve_type else canonical_type
         
         # Convertir la valeur vers le type de séquence cible
         if isinstance(value, str):
             # String -> List : traitement spécial
-            if target_type in (list, collections.abc.Sequence):
+            if canonical_type in (list, collections.abc.Sequence):
                 converted = list(value)  # "abc" -> ['a', 'b', 'c']
             else:
                 raise CoercionError(f"Cannot coerce string to {target_type}")
         elif hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
             # Convertir iterable -> type cible
-            if target_type == list:
+            if canonical_type == list:
                 converted = list(value)
-            elif target_type == tuple:
+            elif canonical_type == tuple:
                 converted = tuple(value)
-            elif target_type == set:
+            elif canonical_type == set:
                 converted = set(value)
             else:
-                # Pour les ABC, essayer de créer le type d'origine
+                # Pour les ABC, essayer de créer le type canonique ou d'origine
                 try:
-                    converted = origin(value)
+                    converted = canonical_type(value)
                 except Exception:
-                    converted = list(value)  # Fallback vers list
+                    try:
+                        converted = origin(value)
+                    except Exception:
+                        converted = list(value)  # Fallback vers list
         else:
             raise CoercionError(f"Cannot coerce {type(value)} to sequence")
         
@@ -205,17 +243,22 @@ class Coercer:
                 coerced_elements.append(coerced_item)
             
             # Reconstruire le bon type
-            if target_type == list:
+            if preferred_type == list:
                 return coerced_elements
-            elif target_type == tuple:
+            elif preferred_type == tuple:
                 return tuple(coerced_elements)
-            elif target_type == set:
+            elif preferred_type == set:
                 return set(coerced_elements)
+            elif preferred_type is collections.deque and preserve_type:
+                return collections.deque(coerced_elements, maxlen=value.maxlen)
             else:
                 try:
-                    return origin(coerced_elements)
+                    return preferred_type(coerced_elements)
                 except Exception:
-                    return coerced_elements
+                    try:
+                        return origin(coerced_elements)
+                    except Exception:
+                        return coerced_elements
         
         return converted
 
@@ -224,6 +267,9 @@ class Coercer:
         Coercion pour Dict[K, V], Mapping[K, V], etc.
         """
         target_type = self.type_checker._origin_to_type(origin)
+        canonical_type = self._canonical_containers.get(target_type, target_type)
+        preserve_type = isinstance(value, target_type)
+        preferred_type = type(value) if preserve_type else canonical_type
         
         # Convertir vers dict-like
         if hasattr(value, 'items'):
@@ -250,19 +296,58 @@ class Coercer:
             converted = coerced_dict
         
         # Créer le bon type final
-        if target_type == dict:
+        if preferred_type == dict:
             return converted
-        else:
+        if preferred_type is collections.defaultdict and preserve_type:
+            rebuilt = collections.defaultdict(value.default_factory)
+            rebuilt.update(converted)
+            return rebuilt
+        try:
+            return preferred_type(converted)
+        except Exception:
             try:
                 return origin(converted)
             except Exception:
                 return converted
+
+    def _coerce_typeddict(self, value: Any, target_hint: Any) -> Any:
+        """
+        Coercion pour TypedDict : coercer les valeurs annotées, conserver les clés extra.
+        """
+        if hasattr(value, "items"):
+            data = dict(value.items())
+        elif hasattr(value, "__iter__"):
+            try:
+                data = dict(value)
+            except (TypeError, ValueError):
+                raise CoercionError(f"Cannot coerce {type(value)} to TypedDict")
+        else:
+            raise CoercionError(f"Cannot coerce {type(value)} to TypedDict")
+
+        annotations = getattr(target_hint, "__annotations__", {}) or {}
+        is_total = getattr(target_hint, "__total__", True)
+
+        # Ensure required keys are present
+        if is_total:
+            missing = [k for k in annotations.keys() if k not in data]
+            if missing:
+                raise CoercionError(f"Missing required keys for TypedDict: {missing}")
+
+        # Coerce annotated keys only
+        for key, expected_type in annotations.items():
+            if key in data:
+                data[key] = self.coerce(data[key], expected_type)
+
+        return data
 
     def _coerce_set_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
         """
         Coercion pour Set[T], FrozenSet[T], etc.
         """
         target_type = self.type_checker._origin_to_type(origin)
+        canonical_type = self._canonical_containers.get(target_type, target_type)
+        preserve_type = isinstance(value, target_type)
+        preferred_type = type(value) if preserve_type else canonical_type
         
         # Convertir vers set-like
         if isinstance(value, str):
@@ -284,15 +369,96 @@ class Coercer:
             converted = coerced_elements
         
         # Créer le bon type final
-        if target_type == set:
+        if preferred_type == set:
             return converted
-        elif target_type == frozenset:
+        elif preferred_type == frozenset:
             return frozenset(converted)
-        else:
+        try:
+            return preferred_type(converted)
+        except Exception:
             try:
                 return origin(converted)
             except Exception:
                 return converted
+
+    def _coerce_iterable_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
+        """
+        Coercion pour Iterable/Collection vers un conteneur canonique (list).
+        """
+        target_type = self.type_checker._origin_to_type(origin)
+        canonical_type = self._canonical_containers.get(target_type, target_type)
+
+        if not hasattr(value, '__iter__'):
+            raise CoercionError(f"Cannot coerce {type(value)} to iterable")
+
+        # If it's an iterator, keep laziness by wrapping it.
+        if isinstance(value, collections.abc.Iterator):
+            yield_type = args[0] if args else None
+            def _iter():
+                for item in value:
+                    yield self.coerce(item, yield_type) if yield_type is not None else item
+            return _iter()
+
+        converted = list(value)
+
+        if args and len(args) == 1:
+            elem_type = args[0]
+            converted = [self.coerce(item, elem_type) for item in converted]
+
+        # If the value already matches the target interface, try to preserve its concrete type.
+        if isinstance(value, target_type):
+            value_type = type(value)
+            try:
+                return value_type(converted)
+            except Exception:
+                pass
+
+        if canonical_type == list:
+            return converted
+        try:
+            return canonical_type(converted)
+        except Exception:
+            try:
+                return origin(converted)
+            except Exception:
+                return converted
+
+    def _coerce_container_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
+        """
+        Coercion pour Container : on tente une matérialisation simple si possible.
+        """
+        if not hasattr(value, '__iter__'):
+            raise CoercionError(f"Cannot coerce {type(value)} to container")
+        return self._coerce_iterable_like(value, target_hint, origin, args)
+
+    def _coerce_iterator_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
+        """
+        Coercion pour Iterator/Generator avec matérialisation minimale.
+        Renvoie un iterator/generator paresseux et ne consomme que lors de l'itération.
+        """
+        target_type = self.type_checker._origin_to_type(origin)
+
+        # Si la valeur est déjà le bon type d'iterator/generator, on la retourne telle quelle.
+        if isinstance(value, target_type):
+            return value
+
+        if not hasattr(value, '__iter__'):
+            raise CoercionError(f"Cannot coerce {type(value)} to iterator")
+
+        yield_type = args[0] if args else None
+        iterable = value
+
+        if target_type is collections.abc.Generator:
+            def _gen():
+                for item in iterable:
+                    yield self.coerce(item, yield_type) if yield_type is not None else item
+            return _gen()
+
+        # Iterator (ou variantes) : wrap dans un generator qui coerce éventuellement les items
+        def _iter():
+            for item in iterable:
+                yield self.coerce(item, yield_type) if yield_type is not None else item
+        return _iter()
 
     def _coerce_tuple_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
         """
@@ -345,14 +511,20 @@ class Coercer:
         """
         Coercion pour types custom qui héritent d'ABC.
         """
-        # Stratégie : essayer de créer le type d'origine avec la valeur
+        # Stratégie : utiliser un conteneur canonique si disponible, sinon retomber sur l'origine
+        canonical_type = self._canonical_containers.get(origin, origin)
         try:
             if hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
-                return origin(value)
+                return canonical_type(value)
             else:
-                return origin([value])  # Wrap en liste si pas iterable
+                return canonical_type([value])  # Wrap en liste si pas iterable
         except Exception:
-            raise CoercionError(f"Cannot coerce {type(value)} to {origin}")
+            try:
+                if hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
+                    return origin(value)
+                return origin([value])
+            except Exception:
+                raise CoercionError(f"Cannot coerce {type(value)} to {origin}")
 
     def _coerce_basic_type(self, value: Any, target_hint: Any) -> Any:
         """
@@ -458,6 +630,31 @@ class Coercer:
             (str, tuple): tuple,
             (str, set): set,
         }
+
+    def _build_canonical_containers(self) -> Dict[type, type]:
+        """
+        Build a mapping from container/ABC types (as seen by TypeChecker) to their
+        least-demanding concrete representative. This is used to materialize
+        MutableSequence/Mapping/Set hints into concrete list/dict/set when the
+        provided value is a more general iterable/mapping.
+        """
+        containers: Dict[type, type] = {}
+        # Start from every "concrete" type the TypeChecker uses internally
+        for concrete in set(self.type_checker.origin_to_type_map.values()):
+            containers[concrete] = concrete
+
+        preferred = {
+            collections.abc.Sequence: list,
+            collections.abc.MutableSequence: list,
+            collections.abc.Collection: list,
+            collections.abc.Iterable: list,
+            collections.abc.Mapping: dict,
+            collections.abc.MutableMapping: dict,
+            collections.abc.Set: set,
+            collections.abc.MutableSet: set,
+        }
+        containers.update(preferred)
+        return containers
 
     def _str_to_int(self, value: str) -> int:
         """Conversion string -> int avec gestion d'erreurs."""

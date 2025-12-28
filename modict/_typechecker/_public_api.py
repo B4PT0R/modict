@@ -186,4 +186,85 @@ def typechecked(func):
         return result
     
     return wrapper
+
+
+def coerced(func):
+    """
+    Decorator to coerce args/kwargs and return values, then type-check them.
+    Coercion is attempted first; type checking runs on the coerced values.
+    """
+    if not hasattr(func, "__annotations__"):
+        return func
+
+    signature = inspect.signature(func)
+    coercer = _get_global_coercer()
+    checker = _get_global_typechecker()
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        bound_args = signature.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+
+        for param_name, param in signature.parameters.items():
+            if param_name not in func.__annotations__:
+                continue
+
+            expected_type = func.__annotations__[param_name]
+            arg_value = bound_args.arguments[param_name]
+
+            if param.kind == inspect.Parameter.VAR_POSITIONAL:
+                coerced_items = []
+                for item in arg_value:
+                    try:
+                        coerced_items.append(coercer.coerce(item, expected_type))
+                    except CoercionError:
+                        coerced_items.append(item)
+                bound_args.arguments[param_name] = tuple(coerced_items)
+                for item in bound_args.arguments[param_name]:
+                    if not checker.check_type(expected_type, item):
+                        raise TypeMismatchError(
+                            f"Argument '{param_name}' has invalid item: "
+                            f"expected {expected_type}, got {type(item)}"
+                        )
+            elif param.kind == inspect.Parameter.VAR_KEYWORD:
+                coerced_kwargs = {}
+                for key, item in arg_value.items():
+                    try:
+                        coerced_kwargs[key] = coercer.coerce(item, expected_type)
+                    except CoercionError:
+                        coerced_kwargs[key] = item
+                bound_args.arguments[param_name] = coerced_kwargs
+                for key, item in bound_args.arguments[param_name].items():
+                    if not checker.check_type(expected_type, item):
+                        raise TypeMismatchError(
+                            f"Argument '{param_name}[{key}]' has invalid type: "
+                            f"expected {expected_type}, got {type(item)}"
+                        )
+            else:
+                try:
+                    bound_args.arguments[param_name] = coercer.coerce(arg_value, expected_type)
+                except CoercionError:
+                    pass
+                if not checker.check_type(expected_type, bound_args.arguments[param_name]):
+                    raise TypeMismatchError(
+                        f"Argument '{param_name}' has invalid type: "
+                        f"expected {expected_type}, got {type(bound_args.arguments[param_name])}"
+                    )
+
+        result = func(*bound_args.args, **bound_args.kwargs)
+
+        if "return" in func.__annotations__:
+            return_type = func.__annotations__["return"]
+            try:
+                result = coercer.coerce(result, return_type)
+            except CoercionError:
+                pass
+            if not checker.check_type(return_type, result):
+                raise TypeMismatchError(
+                    f"Return value has invalid type: "
+                    f"expected {return_type}, got {type(result)}"
+                )
+        return result
+
+    return wrapper
 #endregion

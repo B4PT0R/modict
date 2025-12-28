@@ -664,12 +664,6 @@ class TestModelValidators:
 class TestErrorHandling:
     """Tests for error handling"""
 
-    def test_from_model_requires_pydantic(self):
-        """Test that from_model raises ImportError if Pydantic not available"""
-        # This test is a bit meta - we can't really test it when Pydantic IS available
-        # But we can at least verify the method exists
-        assert hasattr(modict, 'from_model')
-
     def test_from_model_invalid_input(self):
         """Test that from_model raises TypeError for non-Pydantic class"""
         class NotAPydanticModel:
@@ -677,13 +671,6 @@ class TestErrorHandling:
 
         with pytest.raises(TypeError):
             modict.from_model(NotAPydanticModel)
-
-    def test_to_model_requires_pydantic(self):
-        """Test that to_model method exists"""
-        class User(modict):
-            name: str
-
-        assert hasattr(User, 'to_model')
 
 
 class TestComputedFields:

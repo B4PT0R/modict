@@ -5,10 +5,9 @@ import pytest
 import sys
 import os
 import argparse
-import coverage
-
 
 def run_tests_with_coverage(verbose=False, html_report=False):
+    import coverage
     """Run tests with coverage measurement."""
     # Start coverage measurement
     cov = coverage.Coverage(

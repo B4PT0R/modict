@@ -500,8 +500,8 @@ class TypeChecker:
         
         # Annotated handling (Python 3.9+)
         if form_name == 'Annotated':
-            self._check_annotated(hint,value)
-        
+            return self._check_annotated(hint, value)
+
         # Unknown special form
         raise TypeCheckError(f"Unsupported special form: {form_name}")
 
@@ -1532,6 +1532,5 @@ class TypeChecker:
     #endregion
 
 #endregion
-
 
 

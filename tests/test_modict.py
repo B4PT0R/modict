@@ -1,6 +1,17 @@
 import pytest
 
-from typing import Protocol, TypedDict, TypeVar, runtime_checkable
+from typing import (
+    Dict,
+    List,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    Protocol,
+    Sequence,
+    TypedDict,
+    TypeVar,
+    runtime_checkable,
+)
 
 import modict as modict_pkg
 from modict import (
@@ -717,6 +728,104 @@ def test_coerce_utility_handles_common_structures():
     assert coerce("42", int) == 42
     assert coerce(("1", "2"), list[int]) == [1, 2]
     assert coerce([("k", "v")], dict[str, str]) == {"k": "v"}
+
+
+def test_coercion_nested_models_inside_collections():
+    class Address(modict):
+        city: str
+        zip_code: int
+
+    class Company(modict):
+        _config = modict.config(strict=False, validate_assignment=True)
+        name: str
+        addresses: list[Address]
+        address_book: dict[int, Address]
+        tagged_addresses: dict[str, list[Address]]
+        recent_moves: MutableSequence[Address]
+
+    payload = {
+        "name": "Acme",
+        "addresses": [{"city": "Paris", "zip_code": "75001"}, {"city": "NYC", "zip_code": 10001}],
+        "address_book": {"1": {"city": "Berlin", "zip_code": "10115"}},
+        "tagged_addresses": {"hq": [{"city": "London", "zip_code": "10101"}]},
+        "recent_moves": ({"city": "Rome", "zip_code": "00100"},),
+    }
+
+    company = Company(payload)
+
+    assert isinstance(company.addresses[0], Address)
+    assert company.addresses[0].zip_code == 75001
+    assert 1 in company.address_book and isinstance(company.address_book[1], Address)
+    assert company.address_book[1].zip_code == 10115
+    assert isinstance(company.tagged_addresses["hq"][0], Address)
+    assert company.tagged_addresses["hq"][0].city == "London"
+    assert isinstance(company.recent_moves[0], Address)
+    assert company.recent_moves[0].city == "Rome"
+
+    company.recent_moves = [{"city": "Lyon", "zip_code": "69000"}]
+    assert isinstance(company.recent_moves[0], Address)
+    assert company.recent_moves[0].zip_code == 69000
+
+
+def test_coercion_nested_models_with_typing_generics():
+    class Address(modict):
+        city: str
+        zip_code: int
+
+    class Company(modict):
+        _config = modict.config(strict=False, validate_assignment=True)
+        name: str
+        addresses: List[Address]
+        address_book: Dict[int, Address]
+        tagged_addresses: Dict[str, List[Address]]
+        recent_moves: MutableSequence[Address]
+
+    payload = {
+        "name": "Globex",
+        "addresses": [{"city": "Paris", "zip_code": "75001"}],
+        "address_book": {"5": {"city": "Berlin", "zip_code": "10115"}},
+        "tagged_addresses": {"hq": [{"city": "London", "zip_code": "10101"}]},
+        "recent_moves": ({"city": "Rome", "zip_code": "00100"},),
+    }
+
+    company = Company(payload)
+
+    assert isinstance(company.addresses[0], Address)
+    assert company.addresses[0].zip_code == 75001
+    assert isinstance(company.address_book[5], Address)
+    assert company.address_book[5].city == "Berlin"
+    assert isinstance(company.tagged_addresses["hq"][0], Address)
+    assert company.tagged_addresses["hq"][0].city == "London"
+    assert isinstance(company.recent_moves[0], Address)
+
+    company.recent_moves = [{"city": "Lyon", "zip_code": "69000"}]
+    assert isinstance(company.recent_moves[0], Address)
+    assert company.recent_moves[0].zip_code == 69000
+
+
+def test_coercion_supports_abstract_collection_hints():
+    class Item(modict):
+        sku: str
+        qty: int
+
+    class Inventory(modict):
+        _config = modict.config(strict=False)
+        backlog: MutableSequence[Item]
+        overrides: MutableMapping[str, Item]
+        shipped: Mapping[str, Sequence[Item]]
+
+    inv = Inventory(
+        backlog=({"sku": "abc", "qty": "1"}, {"sku": "def", "qty": 2}),
+        overrides=[("main", {"sku": "zzz", "qty": "3"})],
+        shipped={"eu": [{"sku": "a", "qty": "4"}], "us": ()},
+    )
+
+    assert [item.qty for item in inv.backlog] == [1, 2]
+    assert isinstance(inv.overrides["main"], Item)
+    assert inv.overrides["main"].qty == 3
+    assert isinstance(inv.shipped["eu"][0], Item)
+    assert inv.shipped["eu"][0].qty == 4
+    assert isinstance(inv.shipped["us"], (list, tuple))
 
 
 def test_coercion_with_strict_type_checking_in_modict():
