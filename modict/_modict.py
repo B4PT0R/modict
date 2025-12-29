@@ -1995,10 +1995,12 @@ class modict(dict, metaclass=modictMeta):
         For mappings:
         - If a key exists in both and both values are containers, merge recursively
         - Otherwise, other's value overwrites this modict's value
+        - If other's value is MISSING, the key is removed from this modict
 
         For sequences:
         - Elements are merged by index
         - If other has more elements, they are appended
+        - If an element's value is MISSING, it is removed from the sequence
 
         Args:
             other: Mapping to merge from
@@ -2007,10 +2009,16 @@ class modict(dict, metaclass=modictMeta):
             TypeError: If attempting to merge incompatible container types
 
         Examples:
-            >>> m = modict(a=1, b=modict(x=1))
-            >>> m.merge({'b': {'y': 2}, 'c': 3})
+            >>> m = modict(a=1, b=modict(x=1), d=4)
+            >>> m.merge({'b': {'y': 2}, 'c': 3, 'd': MISSING})
             >>> m
             modict({'a': 1, 'b': {'x': 1, 'y': 2}, 'c': 3})
+
+            >>> # Recursive deletion with MISSING
+            >>> m = modict(a=modict(b=modict(c=1, d=2), e=3))
+            >>> m.merge({'a': {'b': {'c': MISSING}}})
+            >>> m
+            modict({'a': {'b': {'d': 2}, 'e': 3}})
         """
         deep_merge(self,other)
 
@@ -2034,6 +2042,41 @@ class modict(dict, metaclass=modictMeta):
             {'y.z': (2, 3), 'w': (MISSING, 4)}
         """
         return diff_nested(self,other)
+
+    def diffed(self, other: Mapping):
+        """Return a new modict containing only the differences with another mapping.
+
+        Recursively compares two structures and returns an unwalked nested modict with only
+        the differing entries needed to transform this modict into the other.
+        Meant to be used in conjunction with merge() so that self.merge(self.diffed(other))
+        results in a structure equal to other.
+
+        Args:
+            other: Mapping to compare with
+
+        Returns:
+            modict: A new modict with only the differing keys and their values from other.
+                Keys that exist in self but not in other are set to MISSING to indicate removal.
+
+        Examples:
+            >>> m1 = modict(x=1, y=modict(z=2, t=5), w=4)
+            >>> m2 = modict(x=2, y=modict(z=3, t=5), u=6)
+            >>> diff = m1.diffed(m2)
+            >>> diff
+            modict({Path($.x): 2, Path($.y.z): 3, Path($.w): MISSING, Path($.u): 6})
+            >>> m1.merge(modict.unwalk(diff))
+            >>> m1.deep_equals(m2)
+            True
+        """
+        # Get the differences as a dict of Path: (self_value, other_value)
+        diffs = self.diff(other)
+
+        # Transform to Path: other_value (or MISSING if only in self)
+        result = {}
+        for path, (self_value, other_value) in diffs.items():
+            result[path] = other_value
+
+        return modict.unwalk(result)
 
     def deep_equals(self, other: Mapping):
         """Compare two nested structures deeply for equality.

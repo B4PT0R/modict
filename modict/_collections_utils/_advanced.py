@@ -548,6 +548,8 @@ def deep_merge(target, src, conflict_resolver: Optional[Callable[[Any, Any], Any
     For mappings, merges recursively. For sequences, extends or replaces based on index.
     Conflicts can be resolved via an optional callback.
 
+    If src has a value of MISSING for a key/index, that key/index is removed from target.
+
     Args:
         target: Target container to merge into (modified in-place)
         src: Source container to merge from
@@ -559,10 +561,23 @@ def deep_merge(target, src, conflict_resolver: Optional[Callable[[Any, Any], Any
         >>> deep_merge(target, src)
         >>> target
         {'a': 1, 'b': {'c': 2, 'd': 3}, 'e': 4}
+
+        >>> target = {'a': 1, 'b': 2, 'c': 3}
+        >>> src = {'b': MISSING, 'd': 4}
+        >>> deep_merge(target, src)
+        >>> target
+        {'a': 1, 'c': 3, 'd': 4}
     """
     if isinstance(target, MutableMapping) and isinstance(src, Mapping):
+        # Collect keys to delete first to avoid modifying dict during iteration
+        keys_to_delete = []
+
         for key, src_value in src.items():
-            if has_key(target, key):
+            if src_value is MISSING:
+                # Mark key for deletion
+                if has_key(target, key):
+                    keys_to_delete.append(key)
+            elif has_key(target, key):
                 target_value = target[key]
                 if is_container(target_value) and is_container(src_value):
                     deep_merge(target_value, src_value, conflict_resolver)
@@ -571,9 +586,21 @@ def deep_merge(target, src, conflict_resolver: Optional[Callable[[Any, Any], Any
             else:
                 target[key] = src_value
 
+        # Delete marked keys
+        for key in keys_to_delete:
+            del target[key]
+
     elif isinstance(target, MutableSequence) and isinstance(src, Sequence):
+        # For sequences, we need to handle deletions carefully
+        # We collect indices to delete and process them in reverse order
+        indices_to_delete = []
+
         for idx, src_value in enumerate(src):
-            if idx < len(target):
+            if src_value is MISSING:
+                # Mark index for deletion
+                if idx < len(target):
+                    indices_to_delete.append(idx)
+            elif idx < len(target):
                 target_value = target[idx]
                 if is_container(target_value) and is_container(src_value):
                     deep_merge(target_value, src_value, conflict_resolver)
@@ -581,5 +608,9 @@ def deep_merge(target, src, conflict_resolver: Optional[Callable[[Any, Any], Any
                     target[idx] = conflict_resolver(target_value, src_value) if conflict_resolver else src_value
             else:
                 target.append(src_value)
+
+        # Delete indices in reverse order to maintain index validity
+        for idx in sorted(indices_to_delete, reverse=True):
+            del target[idx]
     else:
         raise TypeError("Types of 'target' and 'src' aren't compatibles for deep merging.")

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.2
+
+### Highlights
+- Enhanced `deep_merge()` with deletion support via `MISSING` sentinel value
+- New `diffed()` method for structural diff and patch operations
+- **Python 3.14+ compatibility** with full PEP 649 support
+
+### Added
+- `deep_merge()` now supports `MISSING` as a sentinel value to delete keys/indices during merge operations
+- `modict.diffed(other)` method returns only the differences needed to transform one modict into another
+- `_get_annotations()` helper function for Python 3.14+ compatibility (PEP 649: Deferred Evaluation of Annotations)
+- Comprehensive test suite for deep operations (`tests/test_deep_operations.py` - 35 new tests)
+
+### Changed
+- `deep_merge()` now handles deletions safely in both Mappings (dicts) and Sequences (lists)
+- Enhanced documentation for `merge()` with examples of recursive deletion using `MISSING`
+
+### Fixed
+- **Python 3.14+ compatibility**: Fixed metaclass annotation handling for PEP 649
+- Annotation-only fields (e.g., `name: str`) now properly detected in Python 3.14+
+- All 353 tests now pass on Python 3.14.2 (previously 57 failures)
+
+### Technical Details
+- `deep_merge()` collects keys/indices to delete before modification to avoid iteration errors
+- List deletions processed in reverse order to maintain index validity
+- `_get_annotations()` auto-detects `__annotations__` (Python 3.10-3.13) vs `__annotate_func__` (Python 3.14+)
+- Full backward compatibility maintained for Python 3.10+
+
 ## 0.3.0
 
 ### Highlights

@@ -6,6 +6,45 @@ from dataclasses import dataclass, field, fields, MISSING as DC_MISSING
 from typing import FrozenSet
 import warnings
 import inspect
+import sys
+
+
+def _get_annotations(dct: dict, name: str, bases: tuple) -> dict:
+    """Get annotations from class dict, compatible with Python 3.10+ and 3.14+.
+
+    Python 3.14+ (PEP 649) defers annotation evaluation, so __annotations__
+    is not available in dct during metaclass __new__. We need to handle both cases.
+
+    Args:
+        dct: The class dictionary from metaclass __new__
+        name: The class name
+        bases: The base classes
+
+    Returns:
+        Dictionary of annotations {field_name: type_hint}
+    """
+    # Python 3.10-3.13: annotations are directly in dct
+    if '__annotations__' in dct:
+        return dct['__annotations__']
+
+    # Python 3.14+: annotations are deferred via __annotate_func__
+    if '__annotate_func__' in dct:
+        # Call the annotation function to get the annotations
+        # The function takes a format parameter: 1 = VALUE, 2 = FORWARDREF, 3 = STRING
+        annotate_func = dct['__annotate_func__']
+        try:
+            # FORMAT_VALUE (1) evaluates annotations to actual types
+            return annotate_func(1)
+        except Exception:
+            # Fallback: try without arguments (some implementations)
+            try:
+                return annotate_func()
+            except Exception:
+                # Last resort: return empty dict
+                return {}
+
+    # No annotations found
+    return {}
 
 
 @dataclass
@@ -605,7 +644,7 @@ class modictMeta(type):
 
     def __new__(mcls, name, bases, dct):
         fields = {}
-        annotations = dct.get('__annotations__', {})
+        annotations = _get_annotations(dct, name, bases)
         model_validators: list[ModelValidator] = []
 
         # Merge with fields from parent classes respecting mro order
