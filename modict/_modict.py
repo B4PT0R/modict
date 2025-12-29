@@ -1950,11 +1950,13 @@ class modict(dict, metaclass=modictMeta):
         return modict(self.walk(callback=callback,filter=filter))
 
     @classmethod
-    def unwalk(cls, walked):
+    def unwalk(cls, walked, ignore_types: bool = False):
         """Reconstruct a nested structure from a flattened dict.
 
         Args:
             walked: A path:value flattened dictionary (e.g., {'a.0.b': 1, 'a.1.c': 2})
+            ignore_types: If True, ignore container_class metadata and use only dict/list
+                         (useful to avoid reconstructing modict instances with defaults)
 
         Returns:
             Reconstructed nested structure (modict or preserved container type)
@@ -1964,13 +1966,11 @@ class modict(dict, metaclass=modictMeta):
             >>> modict.unwalk(walked_data)
             modict({'a': [1, {'b': 2}], 'c': 3})
 
-            >>> # Preserves custom container types
-            >>> from collections import OrderedDict
-            >>> walked_data = {Path('$.config.x'): 1}  # First component has OrderedDict
-            >>> result = modict.unwalk(walked_data)
-            >>> type(result)  # OrderedDict preserved if that was the original type
+            >>> # With ignore_types=True, avoids modict reconstruction
+            >>> modict.unwalk(walked_data, ignore_types=True)
+            modict({'a': [1, {'b': 2}], 'c': 3})  # Plain dict inside, not nested modicts
         """
-        unwalked = unwalk(walked)
+        unwalked = unwalk(walked, ignore_types=ignore_types)
 
         # Only convert to cls if:
         # 1. It's a Mapping AND
@@ -2063,8 +2063,8 @@ class modict(dict, metaclass=modictMeta):
             >>> m2 = modict(x=2, y=modict(z=3, t=5), u=6)
             >>> diff = m1.diffed(m2)
             >>> diff
-            modict({Path($.x): 2, Path($.y.z): 3, Path($.w): MISSING, Path($.u): 6})
-            >>> m1.merge(modict.unwalk(diff))
+            modict({'x': 2, 'y': {'z': 3}, 'w': MISSING, 'u': 6})
+            >>> m1.merge(diff)
             >>> m1.deep_equals(m2)
             True
         """
@@ -2076,7 +2076,8 @@ class modict(dict, metaclass=modictMeta):
         for path, (self_value, other_value) in diffs.items():
             result[path] = other_value
 
-        return modict.unwalk(result)
+        # Use ignore_types=True to avoid reconstructing modict with defaults
+        return modict(unwalk(result, ignore_types=True))
 
     def deep_equals(self, other: Mapping):
         """Compare two nested structures deeply for equality.

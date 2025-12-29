@@ -396,14 +396,16 @@ def is_seq_based(walked: Dict[Path, Any]) -> bool:
     fk = first_keys(walked)
     return fk == set(range(len(fk)))
 
-def unwalk(walked: Dict[Path, Any]) -> MutableContainer:
+def unwalk(walked: Dict[Path, Any], ignore_types: bool = False) -> MutableContainer:
     """Reconstruct a nested structure from a flattened dict.
 
     Args:
         walked: A Path:value flattened dictionary
+        ignore_types: If True, ignore container_class metadata and use only dict/list
+                     (useful to avoid reconstructing modict instances with defaults)
 
     Returns:
-        Reconstructed nested structure with exact container types preserved
+        Reconstructed nested structure with exact container types preserved (or plain dict/list if ignore_types=True)
 
     Examples:
         >>> walked = {Path($.a[0]): 1, Path($.a[1].b): 2, Path($.c): 3}
@@ -412,11 +414,16 @@ def unwalk(walked: Dict[Path, Any]) -> MutableContainer:
         >>> walked = {Path($[0]): 'a', Path($[1]): 'b', Path($[2]): 'c'}
         >>> unwalk(walked)
         ['a', 'b', 'c']
+
+        >>> # With ignore_types=True, always returns plain dict/list
+        >>> unwalk(walked, ignore_types=True)
+        {'a': [1, {'b': 2}], 'c': 3}  # Plain dict, not modict
     """
     # Determine root container type
     # Strategy: Check the first Path's first component's container_class
     #   - If we have a container_class: use it to create the root container
     #   - If container_class is None: fallback to heuristic (check if keys are sequential integers)
+    #   - If ignore_types=True: ignore container_class and use plain dict/list
 
     if walked:
         # Get first path
@@ -425,8 +432,8 @@ def unwalk(walked: Dict[Path, Any]) -> MutableContainer:
         # If path has components, check the first component's container_class
         if first_path.components:
             first_component = first_path.components[0]
-            # Direct detection via container_class metadata
-            if first_component.container_class is not None:
+            # Direct detection via container_class metadata (unless ignore_types=True)
+            if not ignore_types and first_component.container_class is not None:
                 try:
                     base = first_component.container_class()
                 except TypeError:
@@ -436,7 +443,7 @@ def unwalk(walked: Dict[Path, Any]) -> MutableContainer:
                     else:
                         base = {}
             else:
-                # container_class is None (ambiguous) - fallback to heuristic
+                # container_class is None (ambiguous) or ignore_types=True - fallback to heuristic
                 base = [] if is_seq_based(walked) else {}
         else:
             # Empty path (root only) - shouldn't happen in practice

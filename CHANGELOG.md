@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.3
+
+### Fixed
+- `diffed()` now uses `ignore_types=True` internally to prevent reconstructing modict classes with default values
+- This ensures `diffed()` only returns actual differences, not defaults injected during reconstruction
+
+### Added
+- `ignore_types` parameter for `unwalk()` and `modict.unwalk()` to prevent container type reconstruction
+- 3 new tests for `ignore_types` functionality in `tests/test_deep_operations.py`
+
+### Technical Details
+- When `ignore_types=True`, `unwalk()` reconstructs structures using plain `dict` and `list` instead of original container classes
+- This prevents modict subclasses with defaults from injecting their default values during diff reconstruction
+
 ## 0.3.2
 
 ### Highlights
@@ -11,7 +25,8 @@
 - `deep_merge()` now supports `MISSING` as a sentinel value to delete keys/indices during merge operations
 - `modict.diffed(other)` method returns only the differences needed to transform one modict into another
 - `_get_annotations()` helper function for Python 3.14+ compatibility (PEP 649: Deferred Evaluation of Annotations)
-- Comprehensive test suite for deep operations (`tests/test_deep_operations.py` - 35 new tests)
+- `ignore_types` parameter for `unwalk()` and `modict.unwalk()` to prevent container type reconstruction
+- Comprehensive test suite for deep operations (`tests/test_deep_operations.py` - 38 new tests)
 
 ### Changed
 - `deep_merge()` now handles deletions safely in both Mappings (dicts) and Sequences (lists)

@@ -340,6 +340,65 @@ class TestModictDeepOperations:
         assert not m1.deep_equals(m2)
 
 
+class TestIgnoreTypes:
+    """Tests for ignore_types parameter in unwalk and diffed."""
+
+    def test_unwalk_with_ignore_types(self):
+        """Test that ignore_types prevents modict reconstruction."""
+        from modict._collections_utils import Path, unwalk
+
+        # Create walked data with modict container_class
+        walked = {
+            Path.from_jsonpath('$.x'): 1,
+            Path.from_jsonpath('$.y.z'): 2,
+        }
+
+        # Without ignore_types (default)
+        result_with_types = unwalk(walked, ignore_types=False)
+        # Should work fine
+        assert 'x' in result_with_types
+
+        # With ignore_types
+        result_without_types = unwalk(walked, ignore_types=True)
+        assert 'x' in result_without_types
+        assert isinstance(result_without_types, dict)
+
+    def test_diffed_with_modict_defaults(self):
+        """Test that diffed() works correctly with modict classes having defaults."""
+        # Define a modict class with defaults
+        class Config(modict):
+            api_url: str = 'https://api.example.com'
+            timeout: int = 30
+            debug: bool = True
+
+        c1 = Config(api_url='https://old.com', timeout=10, debug=False)
+        c2 = Config(api_url='https://new.com', timeout=10)  # debug=True (default)
+
+        # Get diff
+        diff = c1.diffed(c2)
+
+        # Apply diff
+        c1_copy = c1.deepcopy()
+        c1_copy.merge(diff)
+
+        # Should be equal
+        assert c1_copy.deep_equals(c2)
+        assert dict(c1_copy) == dict(c2)
+
+    def test_diffed_ignores_container_types(self):
+        """Test that diffed() returns plain dicts to avoid default injection."""
+        m1 = modict(x=1, y=modict(z=2, t=5), w=4)
+        m2 = modict(x=2, y=modict(z=3, t=5), u=6)
+
+        diff = m1.diffed(m2)
+
+        # The diff should contain a nested structure
+        assert 'y' in diff
+        # The nested 'y' should only have changed values, not defaults
+        assert 'z' in diff['y']
+        assert 't' not in diff['y']  # t unchanged, should not be in diff
+
+
 class TestComplexScenarios:
     """Tests for complex real-world scenarios."""
 
