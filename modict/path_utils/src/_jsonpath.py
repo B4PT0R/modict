@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+from typing import Any
+
+from jsonpath_ng import parse
+from jsonpath_ng.jsonpath import Child, Fields, Index, JSONPath, Root, This
+
+from .path import PathKey
+
+
+def keys_from_jsonpath(path: JSONPath) -> tuple[PathKey, ...]:
+    if isinstance(path, (Root, This)):
+        return ()
+    if isinstance(path, Child):
+        return keys_from_jsonpath(path.left) + keys_from_jsonpath(path.right)
+    if isinstance(path, Fields):
+        if len(path.fields) != 1:
+            raise ValueError(f"Unsupported multi-field path: {path.fields!r}")
+        return (path.fields[0],)
+    if isinstance(path, Index):
+        return (path.index,)
+    raise ValueError(f"Unsupported jsonpath_ng path node: {type(path).__name__}")
+
+
+def keys_from_expr(expr: str | JSONPath) -> tuple[PathKey, ...]:
+    parsed = parse(expr) if isinstance(expr, str) else expr
+    return keys_from_jsonpath(parsed)

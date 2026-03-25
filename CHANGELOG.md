@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+- Pydantic interoperability (`modict.from_model`, `MyModict.to_model`, `TypeCache`, and the conversion module)
+- JSON Schema export (`modict.json_schema`) and field `constraints`
+
 ## 0.3.3
 
 ### Fixed
@@ -65,4 +71,3 @@
 ### Notes
 - `frozen=True` remains an absolute invariant (always enforced regardless of `check_keys`/`check_values`).
 - Pydantic → modict conversion stays best-effort by design; modict-only behaviors are preserved only when the Pydantic model originated from `modict.to_model()`.
-

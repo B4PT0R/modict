@@ -1,41 +1,16 @@
 # modict
 
-`modict` (short for 'model dict' or 'modern dict') is a modern, dict-first data structure designed to interop nicely with Pydantic models.
+`modict` (short for 'model dict' or 'modern dict') is a modern, dict-first data structure.
 
-It’s a `dict` subclass with an optional model-like layer (typed fields, factories, validators, computed values, JSON Schema export) and easy class-level conversion to/from Pydantic Models.
-
-Core philosophy: keep `dict` ergonomics and compatibility, gradually opt into stronger model semantics when you want them, and eventually convert to an actual Pydantic model where it matters.
+It’s a `dict` subclass with an optional model-like layer (typed fields, factories, validators, computed values).
 
 Where it sits compared to Pydantic:
 
-- `modict` is best when you want a **real `dict`** (all familiar dict methods, native MutableMapping interface, code expecting dict instances) and only need **lightweight, opt-in modeling** on top.
+- `modict` is when you want the mutability of a **real `dict`** (all familiar dict methods, native MutableMapping interface, code expecting dict instances) and only need **lightweight, opt-in modeling** on top.
 - Pydantic is best when you want a **pure “model” abstraction** (`BaseModel`), strong tooling/ecosystem, advanced Model features, and you don’t need `dict` subclass semantics.
 
-In practice, for many basic use cases (a small typed container, a couple of defaults/validators/computed properties, light validation, JSON/schema output), the two are **roughly interchangeable**. The real differences tend to show up in more advanced scenarios: ecosystem/tooling, strict contract modeling, serialization knobs, and whether you want to stay dict-first (`modict`) or model-first (Pydantic).
+In practice, for many basic use cases (a small typed container, a couple of defaults/validators/computed properties, light validation, JSON output), the two are **roughly interchangeable**. The real differences tend to show up in more advanced scenarios: ecosystem/tooling, strict contract modeling, serialization knobs, and whether you want to stay dict-first (`modict`) or model-first (Pydantic).
 
-`modict` makes it so that **you don't have to choose**. Start coding with `modict` as a drop-in replacement of `dict`, add hints/validators/computed as you go, and convert to Pydantic at API/SDK boundaries if you need to.
-
-**Pros / cons (high level)**
-
-`modict` pros:
-- Drop-in `dict` behavior + attribute access (no wrapper object).
-- Incremental adoption: start dict-first, add hints/validators/computed as needed.
-- Built-in nested path utilities (`Path`/JSONPath, `get_nested`/`set_nested`, `walk`/`unwalk`) for working with arbitrary nested data.
-- clean `modict` -> Pydantic interop for class-level conversion.
-
-`modict` cons:
-- Smaller ecosystem than Pydantic (fewer integrations, conventions, docs, plugins).
-- Model layer is intentionally minimal; some advanced Pydantic behaviors don’t have 1:1 equivalents.
-- Pydantic -> `modict` interop is best-effort (especially for computed/deps and Pydantic-only features).
-- Type checking/coercion is implemented in pure Python (no Rust-backed speedups).
-
-Pydantic pros:
-- Very mature validation/serialization ecosystem and widespread integration.
-- Clear model semantics (`BaseModel`) with strong schema generation and tooling.
-
-Pydantic cons (in a `dict`-centric codebase):
-- Not a `dict` subclass; no native `update`, `setdefault`, etc. bridging to/from mappings is explicit.
-- Model usage can be heavier than needed when you mainly want “a dict with model-like capabilities”.
 
 **Use cases (when to pick what)**
 
@@ -43,8 +18,7 @@ Pydantic cons (in a `dict`-centric codebase):
 - You want **plasticity while prototyping**: start with free-form data, progressively add hints/validators/computed as your shape stabilizes.
 - You need a **dict-first internal representation** for config and data manipulation (configs, JSON-like payloads, ETL/transform pipelines) and you want to keep that surface area.
 - You need ergonomic nested manipulation (JSONPath/`Path`, `get_nested`/`set_nested`, `walk`/`unwalk`, deep `diffing`/`comparison`) without introducing a separate model layer everywhere.
-- You want “some structure” (types/validators/computed/schema) but still allow extra keys and mutable updates during processing.
-- You want to interop with Pydantic at boundaries (API/SDK layer) but keep a dict-first representation internally.
+- You want “some structure” (types/validators/computed) but still allow extra keys and mutable updates during processing.
 
 Pydantic shines when:
 - You need a **clear data contract** and rich validation/serialization options for **API communication** (request/response models, SDKs, schemas).
@@ -68,9 +42,7 @@ Pydantic shines when:
 - [Aliases](#aliases)
 - [Type Checking & Coercion](#type-checking--coercion)
 - [Serialization](#serialization)
-- [JSON Schema](#json-schema)
 - [Deep Conversion & Deep Ops](#deep-conversion--deep-ops)
-- [Pydantic Interop (Optional)](#pydantic-interop-optional)
 - [Package Tour (Internal Modules)](#package-tour-internal-modules)
 - [Public API Reference](#public-api-reference)
 - [Development](#development)
@@ -86,7 +58,6 @@ pip install modict
 Requirements:
 - Python 3.10+
 - JSONPath support relies on `jsonpath-ng` (the only dependency of the package!)
-- Pydantic interoperability is optional (only needed if you call `from_model()` / `to_model()`)
 
 ## Quick Start
 
@@ -119,7 +90,7 @@ assert u.age == 30                  # best-effort coercion unless strict=True
 assert u.country == "FR"
 ```
 
-Tip: Annotated fields without defaults are not required; they mainly provide type validation/coercion when the key is present. Annotations and regular class defaults are enough for most fields. Use `modict.field(...)` later when you need more control (constraints, aliases, metadata).
+Tip: Annotated fields without defaults are not required; they mainly provide type validation/coercion when the key is present. Annotations and regular class defaults are enough for most fields. Use `modict.field(...)` later when you need more control (metadata).
 
 ## Path-Based Tools
 
@@ -130,9 +101,7 @@ Tip: Annotated fields without defaults are not required; they mainly provide typ
 You can target nested values using:
 - **JSONPath strings** (RFC 9535): `$.users[0].name`
 - **Tuples** of keys/indices: `("users", 0, "name")`
-- **`Path` objects**: `Path.from_jsonpath("$.users[0].name")`
-
-JSONPath strings must start with `$`. Legacy dot-notation (like `"users.0.name"`) is rejected to avoid ambiguity (see `MIGRATION.md`).
+- **`Path` objects**: `Path("$.users[0].name")`
 
 ### The `Path` object
 
@@ -141,12 +110,12 @@ JSONPath strings must start with `$`. Legacy dot-notation (like `"users.0.name"`
 ```python
 from modict import Path
 
-p = Path.from_jsonpath("$.users[0].name")
+p = Path("$.users[0].name")
 assert p.to_tuple() == ("users", 0, "name")
 assert p.to_jsonpath() == "$.users[0].name"
 ```
 
-Internally, a `Path` is a tuple of `PathKey` components. Each component carries:
+Internally, a `Path` is a tuple of `PathNode` components. Each component carries:
 - the **key/index** (`"users"`, `0`, `"name"`)
 - the **origin container class** (`dict`, `list`, …) when it can be inferred (`container_class`), which lets `walk()` → `unwalk()` preserve container types.
 
@@ -193,49 +162,24 @@ modict.field(
     default=MISSING,
     hint=None,         # None = use class annotation when provided
     required=False,    # only required when explicitly True
-    metadata=None,     # docs / schema metadata (no runtime semantics)
-    constraints=None,  # JSON-Schema-like constraints (enforced + exported)
-    aliases=None,      # input aliases / serialization alias
     validators=None,   # internal: used by the metaclass when collecting @modict.validator(...)
 )
 ```
 
-Example (explicit defaults + constraints):
+Example (explicit defaults):
 
 ```python
 from modict import modict, MISSING
 
 class User(modict):
     name: str = modict.field(default=MISSING, required=True)
-    age = modict.field(default=25, constraints={"ge": 0}, hint=int)
+    age = modict.field(default=25, hint=int)
 
 u = User({"name": "Alice", "age": "30"})
 assert u.age == 30
 ```
 
 Note: if you pass `hint=...` explicitly in `modict.field(...)`, it takes precedence over the class annotation.
-
-### `metadata` (documentation-only)
-
-`metadata` is for documentation/schema hints (not validation). Common keys:
-- `title`: str
-- `description`: str
-- `examples`: any JSON-serializable value (often a list)
-- `deprecated`: bool
-
-### `constraints` (validation + JSON Schema)
-
-Constraints are enforced at runtime and exported in `json_schema()`:
-- numbers: `gt`, `ge`, `lt`, `le`, `multiple_of`
-- strings / sized containers: `min_length`, `max_length`, `pattern`
-
-```python
-class Product(modict):
-    sku: str = modict.field(constraints={"pattern": r"^[A-Z]{3}-\\d{4}$"})
-    price: float = modict.field(constraints={"gt": 0})
-
-Product({"sku": "ABC-0001", "price": 9.99})
-```
 
 ## Factories
 
@@ -336,7 +280,7 @@ assert m.sum == 3
 
 Notes:
 - computed values are stored as `Computed` objects inside the dict and evaluated via `__getitem__`
-- returned values still go through the validation pipeline (type checks, constraints, JSON, …) when enabled
+- returned values still go through the validation pipeline (type checks, JSON, …) when enabled
 - invalidation semantics:
   - `deps=None` (default): invalidate on any key change
   - `deps=[...]`: invalidate only when one of those keys changes (can include other computed names)
@@ -366,7 +310,7 @@ m.invalidate_computed()
 ## Validation Pipeline
 
 The pipeline is controlled by `_config.check_values`:
-- `check_values="auto"` (default): enabled when the class looks model-like (hints/validators/config/constraints).
+- `check_values="auto"` (default): enabled when the class looks model-like (hints/validators/config).
 - `check_values=True`: always enabled.
 - `check_values=False`: bypassed (pure dict behavior).
 
@@ -389,12 +333,12 @@ Order of operations for a field value:
 5. type check (if the field has a type hint)
 6. field validators in `mode="after"`
 7. type check again (post-validators can still transform)
-8. field constraints (`constraints=...` on the `Field`)
-9. JSON-serializability check (`enforce_json=True`, with optional encoders)
+8. JSON-serializability check (`enforce_json=True`, with optional encoders)
 
 ## Configuration (Deep Dive)
 
 All model-like behavior is controlled by the class attribute `_config`, a `modictConfig` dataclass created via `modict.config(...)`.
+Only modict-supported options are accepted there.
 
 ```python
 class User(modict):
@@ -440,10 +384,8 @@ class Msg(modict):
 - `use_enum_values`: when `True`, enums are normalized to `.value` during validation and serialization.
 - `str_strip_whitespace`, `str_to_lower`, `str_to_upper`: optional Pydantic-like string transformations.
   - if both `str_to_lower` and `str_to_upper` are `True`, lower takes precedence.
-- `populate_by_name`: when `False` and a field has an alias, input must use the alias (field name is rejected).
-  - `alias_generator`: callable `(field_name: str) -> str` applied at class creation time to fields without explicit aliases.
-  - `validate_default`: when `True`, defaults are type-checked at class creation (skips `Factory`/`Computed`).
-  - `from_attributes`: when `True`, `MyModict(obj)` can read declared fields from `obj.field` attributes (when `obj` is not a mapping).
+- `validate_default`: when `True`, defaults are type-checked at class creation (skips `Factory`/`Computed`).
+- `from_attributes`: when `True`, `MyModict(obj)` can read declared fields from `obj.field` attributes (when `obj` is not a mapping).
 - `override_computed`: when `False` (default), prevents overriding/deleting computed fields (and passing initial values for computed fields). Set to `True` to allow it explicitly.
 - `require_all`: when `True`, requires all declared class fields (including computed) to be present at initialization; declared fields cannot be deleted (annotation-only fields become required).
 - `evaluate_computed`: when `True` (default), computed fields are evaluated on access; when `False`, computed fields are treated as raw stored objects (no evaluation).
@@ -472,39 +414,6 @@ class Fast(modict):
 - config values explicitly set in a subclass override inherited values
 - when using multiple inheritance, the left-most base wins (for explicitly-set config keys)
 
-## Aliases
-
-Aliases live in `Field.aliases` (not in `metadata`).
-
-Supported keys:
-- `alias`: single alias (common case)
-- `validation_alias`: string or list of strings (accepted input keys)
-- `serialization_alias`: string (used by `model_dump(by_alias=True)`)
-
-Input behavior is controlled by `_config.populate_by_name`:
-- `populate_by_name=False`: if a field has aliases, only aliases are accepted (field name is rejected).
-- `populate_by_name=True`: accept both alias and field name (but never both at once).
-
-```python
-class User(modict):
-    _config = modict.config(populate_by_name=False)
-    name: str = modict.field(aliases={"alias": "full_name"})
-
-User({"full_name": "Alice"})        # OK
-```
-
-### `alias_generator`
-
-Generate aliases automatically for fields that do not define any explicit alias:
-
-```python
-class User(modict):
-    _config = modict.config(alias_generator=str.upper, populate_by_name=False)
-    name: str
-
-User({"NAME": "Alice"})
-```
-
 ## Type Checking & Coercion
 
 `modict` relies on its internal runtime type system (in `modict/_typechecker/`) for:
@@ -522,14 +431,13 @@ If coercion fails, the original value is kept; the subsequent type check decides
 ### `model_dump` / `model_dump_json`
 
 ```python
-data = u.model_dump(by_alias=True, exclude_none=True)
-json_str = u.model_dump_json(by_alias=True)
+data = u.model_dump(exclude_none=True)
+json_str = u.model_dump_json(exclude_none=True)
 ```
 
 Supported options:
-- `by_alias`: use `serialization_alias` then `alias`
 - `exclude_none`: drop keys with `None`
-- `include` / `exclude`: sets of *field names* (not aliases)
+- `include` / `exclude`: sets of keys (field names)
 - `encoders`: mapping `type -> callable` (see below)
 
 ### JSON encoders
@@ -547,22 +455,8 @@ class Event(modict):
 ### `dumps` / `dump`
 
 `dumps()` / `dump()` are thin wrappers around `json.dumps` / `json.dump`, and support:
-- `by_alias`
 - `exclude_none`
 - `encoders`
-
-## JSON Schema
-
-`json_schema()` exports a Draft 2020-12 JSON Schema from a modict class:
-
-```python
-schema = User.json_schema()
-```
-
-Notes:
-- `$schema` is always `https://json-schema.org/draft/2020-12/schema`
-- `constraints` are mapped to standard JSON Schema keywords (`minimum`, `multipleOf`, `pattern`, …)
-- `additionalProperties` is emitted only when `extra="forbid"` (diff vs JSON Schema default)
 
 ## Deep Conversion & Deep Ops
 
@@ -584,49 +478,6 @@ These operations are implemented on top of the `modict._collections_utils` packa
 - `diff(mapping)`: deep diff that returns `{Path: (left, right)}` with `MISSING` for absent values.
 - `deep_equals(mapping)`: deep equality by comparing walked representations.
 
-## Pydantic Interop (Optional)
-
-Pydantic interoperability is an **optional feature** that operates at the **class level** (it converts *model classes*, not just instances).
-
-When Pydantic is installed:
-- `modict.from_model(PydanticModel)` converts a Pydantic `BaseModel` class into a new `modict` subclass.
-- `MyModict.to_model()` converts a `modict` subclass into a new Pydantic `BaseModel` class.
-
-This is designed for **bidirectional, best-effort round-trips** (Pydantic v1 and v2 supported).
-
-In practice:
-- `modict → Pydantic` is the “clean” direction: since `modict` is the source of truth, the generated Pydantic model is deterministic for the features `modict` supports.
-- `Pydantic → modict` is inherently **best-effort**: Pydantic has a larger feature surface, and some semantics (especially advanced validation/serialization behaviors) don’t have 1:1 equivalents in a dict-first model.
-
-### What gets converted (best-effort)
-
-- Fields: annotations, defaults, and default factories (`Field(default_factory=...)` ↔ `modict.factory(...)`).
-- Config: common Pydantic-aligned options (`extra`, `strict`, `frozen`, `validate_assignment`, string transforms, aliases-related settings, …).
-- Aliases: `alias`, `validation_alias`, `serialization_alias` where representable.
-- Validators:
-  - field validators (before/after when possible)
-  - model/root validators (before/after when possible)
-- Computed fields:
-  - Pydantic v2 computed fields ↔ `modict` computed fields (best-effort for `cache`/`deps`)
-- Nested models:
-  - referenced `BaseModel` types inside annotations are recursively converted to nested `modict` subclasses (cached to preserve sharing)
-
-Pydantic-only metadata that can’t be expressed directly in `modict` is preserved under `Field._pydantic` so it can be re-emitted when converting back.
-
-### Quick example (class-level conversion)
-
-```python
-from pydantic import BaseModel, Field
-from modict import modict
-
-class UserModel(BaseModel):
-    name: str
-    tags: list[str] = Field(default_factory=list)
-
-User = modict.from_model(UserModel)        # Pydantic class -> modict class
-UserModel2 = User.to_model(name="UserV2")  # modict class -> Pydantic class
-```
-
 ## Package Tour (Internal Modules)
 
 This section is an overview of the main internal modules and what functionality they implement.
@@ -636,7 +487,7 @@ If you only need the user-facing API, you can skip to [Public API Reference](#pu
 
 Core behaviors implemented here:
 - dict subclass with attribute access (`m.key` ↔ `m["key"]`) while keeping Python attributes working
-- validation pipeline (`validate()`, assignment validation, extra handling, constraints)
+- validation pipeline (`validate()`, assignment validation, extra handling)
 - computed fields evaluation and dependency-based cache invalidation
 - lazy nested conversion (`auto_convert`) implemented in `__getitem__`
 - nested ops (`get_nested`, `set_nested`, `pop_nested`, …) backed by JSONPath/`Path`
@@ -645,14 +496,14 @@ Core behaviors implemented here:
 
 ### `modict/_modict_meta.py` (metaclass + field system)
 
-Defines the "model-like layer" that turns a `dict` subclass into something schema/validation aware:
+Defines the "model-like layer" that turns a `dict` subclass into something validation aware:
 - `modictMeta`: collects declared fields from `__annotations__` and assigned attributes
   - supports plain defaults, `modict.field(...)` (`Field`), `modict.factory(...)` (`Factory`), and `@modict.computed(...)` (`Computed`)
   - collects `@modict.validator(...)` into per-field validators
   - collects `@modict.model_validator(...)` into model-level validators
 - `modictConfig`: configuration object with explicit-key tracking and inheritance merge semantics
-- `Field`: stores `hint`, `default`, `metadata`, `constraints`, `aliases` (plus an internal `_pydantic` bucket)
-- `Validator` / `ModelValidator`: best-effort signature adapters (modict-style and Pydantic-style callables)
+- `Field`: stores `hint`, `default`, `required`, `metadata`
+- `Validator` / `ModelValidator`: best-effort signature adapters for common call styles
 - `modictKeysView` / `modictValuesView` / `modictItemsView`: dict views that read through `__getitem__` (so computed + lazy conversion + validation happen during iteration)
 
 ### `modict/_collections_utils/` (nested structure utilities)
@@ -681,19 +532,6 @@ This subpackage backs the runtime typing API exported by `modict`:
 - `Coercer`: best-effort conversions for common hints/containers
 - convenience API: `check_type`, `coerce`, `can_coerce`, `typechecked`
 
-### `modict/_pydantic_interop.py` (optional Pydantic conversion)
-
-Class-level conversions, with Pydantic v1 and v2 support:
-- `from_pydantic_model(...)`: Pydantic → modict
-  - converts nested `BaseModel` types to nested modict subclasses (with a global cache)
-  - maps a conservative subset of Pydantic Field/Config metadata into `Field.metadata` / `Field.constraints` / `Field.aliases` and preserves extra info under `Field._pydantic`
-  - imports field validators and model validators when possible (mode `before`/`after`)
-  - extracts computed fields (Pydantic v2) and maps them to `Computed` fields (best-effort for `cache`/`deps`)
-- `to_pydantic_model(...)`: modict → Pydantic
-  - recreates `Field(...)` declarations, validators, model validators, and (v2) computed fields
-  - maps modict config back to a Pydantic config, only emitting non-default values
-- `TypeCache`: weak-reference cache for modict ↔ Pydantic class conversions (to preserve sharing and break cycles)
-
 ## Public API Reference
 
 This section lists the public symbols exported by `modict` and the main methods on `modict` instances.
@@ -715,8 +553,6 @@ From `from modict import ...`:
   - `Path`, `PathKey`
 - Sentinel:
   - `MISSING`
-- Pydantic interop cache:
-  - `TypeCache`
 - Type checking / coercion:
   - `check_type(hint, value)`
   - `coerce(value, hint)`
@@ -734,13 +570,9 @@ From `from modict import ...`:
 - `@modict.validator(field_name, mode="before"|"after")`
 - `@modict.model_validator(mode="before"|"after")`
 - `@modict.computed(cache=False, deps=None)`
-- `modict.json_schema(excluded: set[str] | None = None) -> dict`
 - JSON helpers:
   - `modict.loads(s, **json_kwargs) -> modict`
   - `modict.load(fp_or_path, **json_kwargs) -> modict`
-- Pydantic interop (optional dependency):
-  - `modict.from_model(PydanticModel, *, name=None, **config_kwargs) -> type[modict]`
-  - `MyModict.to_model(*, name=None, **config_kwargs) -> type[pydantic.BaseModel]`
 - Conversion:
   - `modict.convert(obj, seen=None) -> Any`
   - `modict.unconvert(obj, seen=None) -> Any`
