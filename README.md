@@ -1,30 +1,30 @@
 # modict
 
-`modict` (short for 'model dict' or 'modern dict') is a modern, dict-first data structure.
+`modict` is a Python `dict` subclass with an optional model-like layer: typed fields, defaults, factories, validators, computed values, and a full set of deep nested operations.
 
-It's a `dict` subclass with an optional model-like layer (typed fields, factories, validators, computed values).
+It stays a real `dict` throughout — every standard dict method works, and modict instances are accepted everywhere a `dict` or `Mapping` is expected, without conversion.
 
-Where it sits compared to Pydantic:
+## Why not just use…
 
-- `modict` is when you want the mutability of a **real `dict`** (all familiar dict methods, native MutableMapping interface, code expecting dict instances) and only need **lightweight, opt-in modeling** on top.
-- Pydantic is best when you want a **pure "model" abstraction** (`BaseModel`), strong tooling/ecosystem, advanced model features, and you don't need `dict` subclass semantics.
+**`dict`** — Great for free-form data, but no types, no validation, no computed fields, no deep ops. You end up reimplementing the same helpers everywhere.
 
-In practice, for many basic use cases (a small typed container, a couple of defaults/validators/computed properties, light validation, JSON output), the two are **roughly interchangeable**. The real differences show up in more advanced scenarios: ecosystem/tooling, strict contract modeling, serialization knobs, and whether you want to stay dict-first (`modict`) or model-first (Pydantic).
+**`dataclass`** — Clean syntax for typed containers, but not a `dict`: you need `dataclasses.asdict()` at every boundary, no runtime type checking, no coercion, no computed fields with cache invalidation, no extra keys, no nested ops.
 
+**`TypedDict`** — A static typing annotation, not a runtime object. No behavior, no defaults, no validators. Only useful for type checkers.
 
-**Use cases (when to pick what)**
+**`Pydantic BaseModel`** — Excellent for strict data contracts and API modeling, but model-first: not a `dict` subclass, requires explicit `.model_dump()` conversion at boundaries, and is designed around validation-as-contract rather than mutable data manipulation.
 
-`modict` shines when:
-- You want **plasticity while prototyping**: start with free-form data, progressively add hints/validators/computed as your shape stabilizes.
-- You need a **dict-first internal representation** for config and data manipulation (configs, JSON-like payloads, ETL/transform pipelines) and you want to keep that surface area.
-- You need ergonomic nested manipulation (JSONPath/`Path`, `get_nested`/`set_nested`, `walk`/`unwalk`, deep diffing/comparison) without introducing a separate model layer everywhere.
-- You want "some structure" (types/validators/computed) but still allow extra keys and mutable updates during processing.
+**`attrs`** — Similar expressiveness to dataclass for modeling, but again not a `dict`. Adds descriptors and slots but no nested ops, no JSONPath, no coercion pipeline.
 
-Pydantic shines when:
-- You need a **clear data contract** and rich validation/serialization options for **API communication** (request/response models, SDKs, schemas).
-- You want strict model semantics and a large ecosystem of integrations (FastAPI, settings, plugins, community conventions).
-- Validation/schema generation is the primary goal and you don't need `dict` subclass behavior.
-- You're building an API or SDK where models are a public contract and stability/tooling matter more than dict ergonomics.
+`modict` occupies a different position: it's a **dict that can be progressively enriched**. Start with raw data, add structure as it stabilizes, keep full dict compatibility throughout. No conversion, no boundaries, no paradigm switch.
+
+## When to use modict
+
+- **Config and settings**: typed defaults, computed derived values, merge/diff/patch between configs.
+- **JSON/API payloads**: parse directly with `modict.loads()`, navigate with JSONPath, validate selectively — no schema required upfront.
+- **ETL and data pipelines**: transform nested structures with `walk`/`unwalk`/`merge`, track changes with `diff`/`diffed`.
+- **Typed events and messages**: a `modict` subclass with `extra="forbid"` and `required=True` fields behaves like a `TypedDict` with runtime enforcement — and is still a plain dict you can pass directly to any serializer or bus.
+- **Prototyping**: start free-form, progressively add hints/validators/computed as your data shape stabilizes.
 
 ## Contents
 
@@ -130,13 +130,14 @@ m.get_nested("$.user.name")           # "Alice"
 m.set_nested("$.user.age", 30)
 m.has_nested("$.user.age")            # True
 m.pop_nested("$.user.age")            # 30
+m.del_nested("$.user.name")           # removes the key
 ```
 
 ### Paths in deep traversal
 
 - `walk()` yields `(Path, value)` leaf pairs.
 - `walked()` returns a `{Path: value}` mapping.
-- `unwalk(walked)` reconstructs a nested structure from a `{Path: value}` mapping, preserving container classes when possible.
+- `unwalk(walked)` reconstructs a nested structure from a `{Path: value}` mapping, optionnaly attempting to preserve container classes when possible.
 
 ## Core Concepts
 
