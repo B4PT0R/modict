@@ -1,10 +1,29 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 ### Removed
 - Pydantic interoperability (`modict.from_model`, `MyModict.to_model`, `TypeCache`, and the conversion module)
 - JSON Schema export (`modict.json_schema`) and field `constraints`
+- `invalidate_all_computed()` — use `invalidate_computed()` with no arguments instead
+- `filter()` / `filtered()` — redundant with native Python filtering; also blocked those key names
+
+### Added
+- `Query(path=MISSING, value=MISSING)` primitive in `collections_utils` for combined path+value search
+  - `path`: `MISSING`=any, `str`=JSONPath, `Path`/`tuple`=exact match, `callable`=predicate
+  - `value`: `MISSING`=any, `callable`=predicate, any literal (incl. `None`)=equality check
+- `find()` / `found()` on modict instances via `Query` or inline `path`/`value` constraints
+- `update(other=(), /, **kwargs)` override that routes all assignments through the validation pipeline
+
+### Fixed
+- `popitem()` now returns the last-inserted item (was returning first, violating the dict LIFO contract)
+- `update()` override prevents CPython from bypassing `__setitem__` validation
+
+### Changed
+- All French inline comments translated to English throughout the codebase
+- README rewritten: intro compares modict to `dict`, `dataclass`, `TypedDict`, `Pydantic`, `attrs`
+- `diffed()` documented with `self.merge(self.diffed(other)) == other` contract
+- Comprehensive test suite: +120 tests covering all native dict methods and modict-specific ops
 
 ## 0.3.3
 
