@@ -36,6 +36,51 @@ multiply("5", "3")  # 15
 
 Supports `typing` constructs: `Union`, `Optional`, `list[str]`, `dict[str, int]`, `tuple[T, ...]`, ABCs from `collections.abc`, and more.
 
+Supported runtime-friendly constructs include:
+- `Union`, `Optional`, `Literal`, `LiteralString`, `Annotated`
+- `TypedDict` including `Required[...]` / `NotRequired[...]`
+- `Callable[...]`, `Protocol`, `type[T]` / `Type[T]`
+- forward references as strings or explicit `ForwardRef` objects
+- modern `TypeAliasType` aliases when available on the running Python version
+
+## Runtime Semantics
+
+`typechecker` aims to be reliable at runtime, not exhaustive with every static-only
+feature from `typing`.
+
+### Strictly checked
+
+These cases are validated structurally and should be treated as strong runtime guarantees:
+- concrete classes and built-in containers
+- `TypedDict` declared keys and annotated value types
+- `Callable[...]` signatures, including parameter/return compatibility
+- `Protocol` declared members (attributes and methods)
+- `type[T]` / `Type[T]`
+
+### Intentionally permissive
+
+Some hints cannot be validated soundly at runtime without consuming iterators or
+probing arbitrary values. In those cases the checker validates interface shape only:
+- `Iterator[T]`
+- `Iterable[T]` when the value is itself an iterator
+- `Container[T]`
+- `KeysView[T]`, `ValuesView[T]`, `ItemsView[K, V]`
+
+This permissiveness is intentional and covered by tests.
+
+### Coercion policy
+
+`coerce(value, hint)` is conservative:
+- it only performs best-effort conversions that are reasonable at runtime
+- it does not attempt to synthesize class objects for `Type[T]`
+- recursive coercion paths fail with `CoercionError` instead of recursing indefinitely
+
+### Recursion safety
+
+Recursive aliases and cyclic values are handled defensively:
+- repeated `(hint, value)` pairs during checking short-circuit safely
+- recursive coercion detects loops and fails explicitly with `CoercionError`
+
 ## API
 
 ### Functions

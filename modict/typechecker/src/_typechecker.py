@@ -36,6 +36,7 @@ class TypeChecker:
     """
     
     def __init__(self):
+        self._active_checks: set[tuple[int, int]] = set()
 
         self.origin_to_type_map = {
             # Basic collections
@@ -70,6 +71,7 @@ class TypeChecker:
             
             # Callable types
             typing.Callable: collections.abc.Callable,
+            typing.Type: type,
             
             # Bytes-like types
             typing.ByteString: collections.abc.ByteString,
@@ -109,6 +111,7 @@ class TypeChecker:
             (typing.Dict, dict): self._check_mapping_like,
             (typing.Set, set): self._check_set_like,
             (typing.FrozenSet, frozenset): self._check_set_like,
+            (typing.Type, type): self._check_type_type,
             
             # Sequence abstractions
             (typing.Sequence, collections.abc.Sequence): self._check_sequence_like,
@@ -170,7 +173,12 @@ class TypeChecker:
             TypeCheckError: When some minor error made the type check impossible
             TypeCheckFailureError: When any other uncaught exception occurs
         """
+        guard_key = (id(hint), id(value))
+        if guard_key in self._active_checks:
+            return True
+
         try:
+            self._active_checks.add(guard_key)
             result = self._check_type_internal(hint, value)
             if not isinstance(result, bool):
                 raise TypeCheckFailureError(
@@ -185,12 +193,282 @@ class TypeChecker:
             raise
         except Exception as e:
             raise TypeCheckFailureError(f"Error during type checking: {str(e)}")
+        finally:
+            self._active_checks.discard(guard_key)
     #endregion
 
     #region: hint parsing
 
     def _origin_to_type(self,origin):
         return self.origin_to_type_map.get(origin,origin)
+
+    def _typing_wrapper_origins(self):
+        """Return runtime-transparent typing wrappers that should be unwrapped."""
+        wrappers = []
+        for name in ("Required", "NotRequired", "ReadOnly"):
+            wrapper = getattr(typing, name, None)
+            if wrapper is not None:
+                wrappers.append(wrapper)
+        return tuple(wrappers)
+
+    def _is_runtime_wrapper(self, hint: Any) -> bool:
+        """Return True for wrappers such as Required[T] and NotRequired[T]."""
+        origin = get_origin(hint)
+        return origin in self._typing_wrapper_origins()
+
+    def _unwrap_runtime_wrapper(self, hint: Any) -> Any:
+        """Unwrap runtime-transparent typing wrappers to their inner type."""
+        if not self._is_runtime_wrapper(hint):
+            return hint
+        args = get_args(hint)
+        if len(args) != 1:
+            raise TypeCheckError(f"{get_origin(hint)} requires exactly 1 type argument")
+        return args[0]
+
+    def _is_forward_ref_hint(self, hint: Any) -> bool:
+        """Return True for explicit ForwardRef objects."""
+        return isinstance(hint, typing.ForwardRef)
+
+    def _unwrap_forward_ref_hint(self, hint: Any) -> str:
+        """Extract the string payload from a ForwardRef object."""
+        arg = getattr(hint, "__forward_arg__", None)
+        if not isinstance(arg, str):
+            raise TypeCheckError(f"Invalid ForwardRef payload: {hint!r}")
+        return arg
+
+    def _is_type_alias_hint(self, hint: Any) -> bool:
+        """Return True for modern TypeAliasType objects when available."""
+        alias_type = getattr(typing, "TypeAliasType", None)
+        return alias_type is not None and isinstance(hint, alias_type)
+
+    def _unwrap_type_alias_hint(self, hint: Any) -> Any:
+        """Return the underlying value of a TypeAliasType."""
+        value = getattr(hint, "__value__", None)
+        if value is None:
+            raise TypeCheckError(f"Invalid TypeAliasType payload: {hint!r}")
+        return value
+
+    def _literal_values_equal(self, left: Any, right: Any) -> bool:
+        """Compare literal values while keeping bool and int distinct."""
+        return type(left) is type(right) and left == right
+
+    def _typed_dict_required_keys(self, hint: Any) -> set[str]:
+        """Return the required keys for a TypedDict, including Required/NotRequired overrides."""
+        required = getattr(hint, "__required_keys__", None)
+        optional = getattr(hint, "__optional_keys__", None)
+        if required is not None or optional is not None:
+            return set(required or ())
+
+        annotations = getattr(hint, "__annotations__", {}) or {}
+        is_total = getattr(hint, "__total__", True)
+        if is_total:
+            return set(annotations)
+        return set()
+
+    def _protocol_member_names(self, protocol: type) -> set[str]:
+        """Return the protocol members explicitly declared by a protocol type."""
+        names = getattr(protocol, "__protocol_attrs__", None)
+        if names is not None:
+            return set(names)
+
+        collected: set[str] = set()
+        for base in getattr(protocol, "__mro__", (protocol,)):
+            if base is typing.Protocol or base is object or not getattr(base, "_is_protocol", False):
+                continue
+            collected.update(getattr(base, "__annotations__", {}).keys())
+            for name, attr in getattr(base, "__dict__", {}).items():
+                if isinstance(attr, property) or (callable(attr) and not isinstance(attr, type)):
+                    collected.add(name)
+        return collected
+
+    def _protocol_members(self, protocol: type) -> dict[str, Any]:
+        """Build the declared member specification for a protocol."""
+        members: dict[str, Any] = {}
+        for base in reversed(getattr(protocol, "__mro__", (protocol,))):
+            if base is typing.Protocol or base is object or not getattr(base, "_is_protocol", False):
+                continue
+
+            base_annotations = getattr(base, "__annotations__", {})
+            for name in self._protocol_member_names(base):
+                if name in base_annotations:
+                    members[name] = self._unwrap_runtime_wrapper(base_annotations[name])
+                    continue
+
+                attr = getattr(base, "__dict__", {}).get(name, None)
+                if isinstance(attr, property):
+                    return_hint = getattr(attr.fget, "__annotations__", {}).get("return", Any) if attr.fget else Any
+                    members[name] = self._unwrap_runtime_wrapper(return_hint)
+                elif callable(attr) and not isinstance(attr, type):
+                    members[name] = attr
+        return members
+
+    def _callable_hint_from_callable(self, func: Any, *, drop_first_parameter: bool = False):
+        """Derive a Callable[...] hint from a callable object's signature when possible."""
+        try:
+            sig = inspect.signature(func)
+        except (TypeError, ValueError):
+            return Callable
+
+        params = [
+            p for p in sig.parameters.values()
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        ]
+        if drop_first_parameter and params and params[0].name in {"self", "cls"}:
+            params = params[1:]
+
+        arg_hints = [
+            (Any if p.annotation == inspect.Parameter.empty else p.annotation)
+            for p in params
+        ]
+        return_hint = sig.return_annotation
+        if return_hint == inspect.Parameter.empty:
+            return_hint = Any
+
+        return Callable[arg_hints, return_hint]
+
+    def _is_annotation_subtype(self, actual: Any, expected: Any) -> bool:
+        """Return True when ``actual`` is a subtype-like annotation of ``expected``."""
+        if actual is expected:
+            return True
+
+        if actual == inspect.Parameter.empty or expected == inspect.Parameter.empty:
+            return True
+
+        if actual in (None, type(None)) and expected in (None, type(None)):
+            return True
+
+        if actual is Any or expected is Any:
+            return True
+
+        if self._is_type_alias_hint(actual):
+            return self._is_annotation_subtype(self._unwrap_type_alias_hint(actual), expected)
+        if self._is_type_alias_hint(expected):
+            return self._is_annotation_subtype(actual, self._unwrap_type_alias_hint(expected))
+
+        if self._is_forward_ref_hint(actual):
+            return self._is_annotation_subtype(self._unwrap_forward_ref_hint(actual), expected)
+        if self._is_forward_ref_hint(expected):
+            return self._is_annotation_subtype(actual, self._unwrap_forward_ref_hint(expected))
+
+        if self._is_runtime_wrapper(actual):
+            return self._is_annotation_subtype(self._unwrap_runtime_wrapper(actual), expected)
+        if self._is_runtime_wrapper(expected):
+            return self._is_annotation_subtype(actual, self._unwrap_runtime_wrapper(expected))
+
+        actual_form = self._get_special_form_name(actual) if self._is_special_form(actual) else None
+        expected_form = self._get_special_form_name(expected) if self._is_special_form(expected) else None
+
+        if actual_form == "Annotated":
+            args = get_args(actual)
+            return self._is_annotation_subtype(args[0], expected) if args else False
+        if expected_form == "Annotated":
+            args = get_args(expected)
+            return self._is_annotation_subtype(actual, args[0]) if args else False
+
+        if actual_form in {"Final", "ClassVar"}:
+            args = get_args(actual)
+            return self._is_annotation_subtype(args[0], expected) if args else True
+        if expected_form in {"Final", "ClassVar"}:
+            args = get_args(expected)
+            return self._is_annotation_subtype(actual, args[0]) if args else True
+
+        if actual_form == "Literal":
+            return all(
+                self._is_annotation_subtype(type(literal), expected)
+                for literal in get_args(actual)
+            )
+        if expected_form == "Literal":
+            expected_literals = get_args(expected)
+            if actual_form == "Literal":
+                return all(
+                    any(self._literal_values_equal(left, right) for right in expected_literals)
+                    for left in get_args(actual)
+                )
+            return False
+
+        actual_origin = get_origin(actual)
+        expected_origin = get_origin(expected)
+
+        if actual_origin in (typing.Union, Union):
+            return all(self._is_annotation_subtype(arg, expected) for arg in get_args(actual))
+        if expected_origin in (typing.Union, Union):
+            return any(self._is_annotation_subtype(actual, arg) for arg in get_args(expected))
+
+        if actual_origin in (collections.abc.Callable, typing.Callable) or expected_origin in (collections.abc.Callable, typing.Callable):
+            return self._is_callable_annotation_compatible(actual, expected)
+
+        if isinstance(actual, type) and isinstance(expected, type):
+            try:
+                return issubclass(actual, expected)
+            except TypeError:
+                return False
+
+        if actual_origin is not None and expected_origin is not None:
+            try:
+                origins_ok = (
+                    actual_origin == expected_origin
+                    or (
+                        isinstance(actual_origin, type)
+                        and isinstance(expected_origin, type)
+                        and issubclass(actual_origin, expected_origin)
+                    )
+                )
+            except TypeError:
+                origins_ok = (actual_origin == expected_origin)
+
+            if not origins_ok:
+                return False
+
+            actual_args = get_args(actual)
+            expected_args = get_args(expected)
+            if len(actual_args) != len(expected_args):
+                return False
+            return all(
+                self._is_annotation_subtype(a, e)
+                for a, e in zip(actual_args, expected_args)
+            )
+
+        return actual == expected
+
+    def _is_callable_annotation_compatible(self, actual: Any, expected: Any) -> bool:
+        """Return True when ``actual`` is compatible with ``expected`` as a Callable annotation."""
+        actual_origin = get_origin(actual)
+        expected_origin = get_origin(expected)
+
+        callable_origins = (collections.abc.Callable, typing.Callable)
+        if actual_origin not in callable_origins or expected_origin not in callable_origins:
+            return actual == expected
+
+        actual_args = get_args(actual)
+        expected_args = get_args(expected)
+
+        if not actual_args:
+            return True
+        if not expected_args:
+            return True
+        if len(actual_args) != 2 or len(expected_args) != 2:
+            return actual == expected
+
+        actual_params, actual_return = actual_args
+        expected_params, expected_return = expected_args
+
+        if actual_params is ...:
+            params_ok = (expected_params is ...)
+        elif expected_params is ...:
+            params_ok = True
+        else:
+            if len(actual_params) != len(expected_params):
+                return False
+            params_ok = all(
+                self._is_annotation_subtype(expected_param, actual_param)
+                for actual_param, expected_param in zip(actual_params, expected_params)
+            )
+
+        return params_ok and self._is_annotation_subtype(actual_return, expected_return)
 
     def _is_generic_class(self, hint):
         """Check if a hint is a generic class that can be parameterized."""
@@ -278,7 +556,8 @@ class TypeChecker:
         # Known special form names for validation (Protocols are handled separately)
         special_form_names = {
             'Union', 'Optional', 'ClassVar', 'Final', 'Literal',
-            'TypeGuard', 'ParamSpec', 'Concatenate', 'Annotated'
+            'TypeGuard', 'ParamSpec', 'Concatenate', 'Annotated',
+            'LiteralString', 'Never', 'NoReturn'
         }
         
         # The most reliable approach: check the name attribute
@@ -396,6 +675,16 @@ class TypeChecker:
         # Special case for Any and object
         if hint in (Any, object):
             return True
+
+        if self._is_type_alias_hint(hint):
+            return self.check_type(self._unwrap_type_alias_hint(hint), value)
+
+        if self._is_forward_ref_hint(hint):
+            return self._check_forward_ref(self._unwrap_forward_ref_hint(hint), value)
+
+        # Runtime-transparent wrappers such as Required[T] and NotRequired[T]
+        if self._is_runtime_wrapper(hint):
+            return self._check_type_internal(self._unwrap_runtime_wrapper(hint), value)
         
         # Case 9: TypedDict
         if self._is_typeddict(hint):
@@ -502,6 +791,14 @@ class TypeChecker:
         if form_name == 'Annotated':
             return self._check_annotated(hint, value)
 
+        # LiteralString behaves like str at runtime.
+        if form_name == 'LiteralString':
+            return isinstance(value, str)
+
+        # Never/NoReturn are uninhabited at runtime.
+        if form_name in {'Never', 'NoReturn'}:
+            return False
+
         # Unknown special form
         raise TypeCheckError(f"Unsupported special form: {form_name}")
 
@@ -572,18 +869,17 @@ class TypeChecker:
             return False
         
         annotations = getattr(hint, "__annotations__", {})
-        is_total = getattr(hint, "__total__", True)
+        required_keys = self._typed_dict_required_keys(hint)
         
         # Check if all required keys are present
-        if is_total:
-            for key in annotations:
-                if key not in value:
-                    return False
+        for key in required_keys:
+            if key not in value:
+                return False
         
         # Check that all values match their expected types
         for key, val in value.items():
             if key in annotations:
-                expected_type = annotations[key]
+                expected_type = self._unwrap_runtime_wrapper(annotations[key])
                 
                 # Check if the value matches the expected type
                 if not self._check_type_internal(expected_type, val):
@@ -595,6 +891,10 @@ class TypeChecker:
         """
         Check if a value matches the Collection protocol.
         Collection = Sized + Iterable + Container.
+
+        Runtime note:
+            if a value is both a Collection and an Iterator, element inspection is
+            skipped to avoid consuming it.
         
         Args:
             hint: The Collection type hint
@@ -624,7 +924,12 @@ class TypeChecker:
     def _check_container_like(self, hint, value):
         """
         Check if a value matches the Container protocol.
-        Container just requires __contains__.
+        Container just requires ``__contains__``.
+
+        Runtime note:
+            the element type argument cannot be validated soundly without probing
+            arbitrary candidate values, so this check is intentionally
+            interface-only.
         
         Args:
             hint: The Container type hint
@@ -650,6 +955,10 @@ class TypeChecker:
     def _check_mapping_view(self, hint, value):
         """
         Check if a value matches a mapping view type (KeysView, ItemsView, or ValuesView).
+
+        Runtime note:
+            view element types are intentionally not inspected. The checker only
+            validates the view interface itself.
         
         Args:
             hint: The mapping view type hint
@@ -683,8 +992,30 @@ class TypeChecker:
                 
             # Similarly, we can't reliably check the elements
             return True
-            
+        
         return True
+
+    def _check_type_type(self, hint, value):
+        """
+        Check ``type[T]`` / ``Type[T]`` hints.
+
+        A matching value must itself be a class object. When a parameter is
+        present, the class must be a subtype of the expected target.
+        """
+        if not isinstance(value, type):
+            return False
+
+        args = get_args(hint)
+        if not args:
+            return True
+        if len(args) != 1:
+            raise TypeCheckError(f"Type requires exactly 0 or 1 type arguments, got {len(args)}")
+
+        expected_type = self._unwrap_runtime_wrapper(args[0])
+        if expected_type in (Any, object):
+            return True
+
+        return self._is_annotation_subtype(value, expected_type)
 
     def _check_tuple_like(self, hint, value):
         """
@@ -977,7 +1308,7 @@ class TypeChecker:
             bool: True if the value is one of the literal values
         """
         args = get_args(hint)
-        return value in args
+        return any(self._literal_values_equal(value, literal) for literal in args)
     
     def _check_forward_ref(self,hint,value):
         """
@@ -997,7 +1328,9 @@ class TypeChecker:
         frame = inspect.currentframe()
         try:
             resolved_type = self._resolve_forward_ref(hint, frame.f_back)
-            return self._check_type_internal(resolved_type, value)
+            # Re-enter through the guarded public entry point so recursive aliases
+            # can short-circuit safely on repeated (hint, value) pairs.
+            return self.check_type(resolved_type, value)
         finally:
             del frame  # Avoid reference cycles
 
@@ -1285,9 +1618,6 @@ class TypeChecker:
         
         if not actual_args and hasattr(value.__class__, "__orig_class__"):
             actual_args = get_args(value.__class__.__orig_class__)
-
-        # Get the actual type arguments from the value's class or instance
-        actual_args = []
         
         # Check the attributes based on annotations
         if not self._check_generic_class_attributes(origin, expected_args, value):
@@ -1351,7 +1681,7 @@ class TypeChecker:
                     return True
                     
                 # Otherwise check if return type is compatible
-                return self._compare_type_annotations(actual_return, return_type)
+                return self._is_annotation_subtype(actual_return, return_type)
             except (ValueError, TypeError):
                 # If we can't get the signature, be lenient
                 return True
@@ -1380,22 +1710,22 @@ class TypeChecker:
         # Check each parameter type if annotation is present
         for i, (param, expected_type) in enumerate(zip(params, arg_types)):
             if param.annotation != inspect.Parameter.empty:
-                # If parameter is annotated, check it matches expected type
-                if not self._compare_type_annotations(param.annotation, expected_type):
+                # Callable parameters are contravariant: the implementation must
+                # accept at least the expected input domain.
+                if not self._is_annotation_subtype(expected_type, param.annotation):
                     return False
 
         # Check return type if annotation is present
         actual_return = sig.return_annotation
         if actual_return != inspect.Parameter.empty:
-            if not self._compare_type_annotations(actual_return, return_type):
+            if not self._is_annotation_subtype(actual_return, return_type):
                 return False
 
         return True
 
     def _compare_type_annotations(self, actual, expected):
         """
-        Compare two type annotations for compatibility.
-        Used primarily for checking Callable parameter and return types.
+        Compare two annotations using the checker subtype relation.
         
         Args:
             actual: The actual type annotation
@@ -1404,35 +1734,7 @@ class TypeChecker:
         Returns:
             bool: True if the actual type is compatible with the expected type
         """
-        # Special case: If actual is empty annotation, we can't verify it
-        if actual is expected:
-            return True
-        
-        if actual in (None,type(None)) and expected in (None,type(None)) :
-            return True
-
-        if actual == inspect.Parameter.empty:
-            return True
-            
-        # If expected is Any, accept any type
-        if expected == Any:
-            return True
-            
-        # Use our existing type checking logic
-        try:
-            # Create a dummy value of the actual type to check against expected
-            if isinstance(actual, type):
-                dummy = actual()  # This won't work for all types
-                return self._check_type_internal(expected, dummy)
-        except:
-            pass
-            
-        # Fall back to checking type compatibility directly
-        try:
-            return issubclass(actual, expected)
-        except TypeError:
-            # Handle non-class types (like Union, Optional etc)
-            return actual == expected
+        return self._is_annotation_subtype(actual, expected)
 
     def _check_protocol(self, hint, value):
         """
@@ -1445,57 +1747,30 @@ class TypeChecker:
         Returns:
             bool: True if value implements the Protocol
         """
-        # For runtime_checkable protocols, we can use isinstance directly
-        if getattr(hint, "_is_runtime_protocol", False):
-            return isinstance(value, hint)
-            
-        # Otherwise, we need to check structural compatibility
-        protocol_attrs = {}
-        
-        # Collect all attributes from the Protocol and its bases
-        for base in getattr(hint, '__mro__', [hint]):
-            if base is typing.Protocol or base is object:
-                continue
-                
-            # Get annotated attributes (including special methods)
-            if hasattr(base, '__annotations__'):
-                for name, expected_type in base.__annotations__.items():
-                    protocol_attrs[name] = expected_type
-                    
-            # Get non-annotated but required methods/properties
-            for name, attr in getattr(base, '__dict__', {}).items():
-                # Skip private attributes, but include dunder methods
-                if name.startswith('_') and not (name.startswith('__') and name.endswith('__')):
-                    continue
-                    
-                if isinstance(attr, property):
-                    # For properties, check if they exist in value
-                    if name not in protocol_attrs:
-                        protocol_attrs[name] = Any
-                elif callable(attr) and not isinstance(attr, type):
-                    # For methods, just check they exist and are callable
-                    if name not in protocol_attrs:
-                        protocol_attrs[name] = Callable
+        # For runtime_checkable protocols, first enforce the runtime presence check.
+        if getattr(hint, "_is_runtime_protocol", False) and not isinstance(value, hint):
+            return False
 
-        # Check all required attributes and methods
-        for name, expected_type in protocol_attrs.items():
-            # Check if attribute exists (including special methods)
+        # Then validate the members explicitly declared by the protocol itself.
+        protocol_members = self._protocol_members(hint)
+
+        for name, expected in protocol_members.items():
             if not hasattr(value, name):
                 return False
-                
-            # If expected type is Callable, verify attribute is callable
-            if expected_type is Callable:
-                if not callable(getattr(value, name)):
+
+            attr_value = value if name == "__call__" and callable(value) else getattr(value, name)
+
+            if callable(expected) and not isinstance(expected, type):
+                if not callable(attr_value):
+                    return False
+                expected_hint = self._callable_hint_from_callable(expected, drop_first_parameter=True)
+                if not self._check_type_internal(expected_hint, attr_value):
                     return False
                 continue
-                    
-            # For non-callable attributes that have type annotations, 
-            # check their type matches
-            if expected_type is not Any:
-                attr_value = getattr(value, name)
-                if not self._check_type_internal(expected_type, attr_value):
-                    return False
-                    
+
+            if expected is not Any and not self._check_type_internal(expected, attr_value):
+                return False
+
         return True
     #endregion
 
@@ -1532,5 +1807,3 @@ class TypeChecker:
     #endregion
 
 #endregion
-
-

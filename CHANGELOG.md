@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.1
+
+### Added
+- GitHub Actions test workflow covering Python `3.10` through `3.14`
+- Additional regression coverage for `typechecker` runtime semantics, recursion safety, and permissive interface-only checks
+
+### Changed
+- `typechecker` documentation now distinguishes strictly checked constructs from intentionally permissive runtime-only checks
+- Contribution guide now includes the focused `typechecker` test command and CI expectations
+
+### Fixed
+- Hardened `typechecker` and `coercer` around `Callable[...]` variance, `Protocol` member checking, `TypedDict` with `Required[...]` / `NotRequired[...]`, `type[T]`, explicit `ForwardRef`, and modern `TypeAliasType`
+- Recursive aliases and cyclic values now fail safely during coercion instead of recursing indefinitely
+- Remaining French comments/docstrings in the `typechecker` public surface were translated to English
+
 ## 0.4.0
 
 ### Removed

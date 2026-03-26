@@ -11,8 +11,9 @@ _global_typechecker=None
 
 def _get_global_typechecker() -> TypeChecker:
     """
-    Obtient l'instance globale du typechecker (avec lazy initialization).
-    Utilisé par la fonction utilitaire check_type() et le décorateur typechecked(func).
+    Return the global type checker instance with lazy initialization.
+
+    Used by the public ``check_type()`` helper and the ``@typechecked`` decorator.
     """
     global _global_typechecker
     if _global_typechecker is None:
@@ -21,8 +22,9 @@ def _get_global_typechecker() -> TypeChecker:
 
 def _get_global_coercer() -> Coercer:
     """
-    Obtient l'instance globale du coercer (avec lazy initialization).
-    Utilisé par la fonction utilitaire coerce().
+    Return the global coercer instance with lazy initialization.
+
+    Used by the public ``coerce()`` helper.
     """
     global _global_coercer
     if _global_coercer is None:
@@ -31,33 +33,35 @@ def _get_global_coercer() -> Coercer:
 
 def reset_global_typechecker():
     """
-    🔄 Reset l'instance globale du typechecker.
-    Utile pour les tests ou si on veut forcer une réinitialisation.
+    Reset the global type checker instance.
+
+    Mostly useful in tests or when forcing a clean reinitialization.
     """
     global _global_typechecker
     _global_typechecker = None
 
 def reset_global_coercer():
     """
-    🔄 Reset l'instance globale du coercer.
-    Utile pour les tests ou si on veut forcer une réinitialisation.
+    Reset the global coercer instance.
+
+    Mostly useful in tests or when forcing a clean reinitialization.
     """
     global _global_coercer
     _global_coercer = None
 
 def coerce(value: Any, hint: Any) -> Any:
     """
-    🚀 Fonction utilitaire simple pour coercer une valeur vers un type.
+    Coerce a value to the target type hint.
     
     Args:
-        value: La valeur à coercer
-        hint: Le type hint cible (int, List[str], Union[int, str], etc.)
+        value: The value to coerce
+        hint: The target type hint (``int``, ``List[str]``, ``Union[int, str]``, etc.)
         
     Returns:
-        La valeur coercée vers le type cible
+        The coerced value
         
     Raises:
-        CoercionError: Si la coercion n'est pas possible
+        CoercionError: If coercion is not possible
         
     Examples:
         >>> from modict import coerce
@@ -74,14 +78,14 @@ def coerce(value: Any, hint: Any) -> Any:
 
 def can_coerce(value: Any, hint: Any) -> bool:
     """
-    🔍 Vérifie si une valeur peut être coercée vers un type sans faire la coercion.
+    Check whether a value can be coerced to a target type hint.
     
     Args:
-        value: La valeur à tester
-        hint: Le type hint cible
+        value: The value to test
+        hint: The target type hint
         
     Returns:
-        True si la coercion est possible, False sinon
+        True if coercion is possible, otherwise False
         
     Examples:
         >>> can_coerce("42", int)
@@ -89,7 +93,7 @@ def can_coerce(value: Any, hint: Any) -> bool:
         >>> can_coerce("abc", int)
         False
         >>> can_coerce([1, 2, 3], List[str])
-        True  # Chaque int peut être coercé en str
+        True  # Each int can be coerced to str
     """
     try:
         _get_global_coercer().coerce(value, hint)

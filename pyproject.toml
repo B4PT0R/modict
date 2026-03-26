@@ -6,24 +6,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "modict"
-version = "0.4.0"
+version = "0.4.1"
 description = "A dict subclass with optional typed fields, validators, computed values, and deep nested ops"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
 authors = [
     { name = "baptiste", email = "bferrand.maths@gmail.com" },
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
     "jsonpath-ng>=1.6.1",
 ]
-
-[project.license]
-file = "LICENSE"
 
 [project.optional-dependencies]
 dev = [
@@ -40,6 +37,9 @@ Homepage = "https://github.com/B4PT0R/modict"
 [tool.setuptools.packages.find]
 where = [
     ".",
+]
+include = [
+    "modict*",
 ]
 
 [tool.pytest.ini_options]

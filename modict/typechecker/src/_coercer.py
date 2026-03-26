@@ -18,6 +18,7 @@ class Coercer:
     
     def __init__(self, type_checker: TypeChecker):
         self.type_checker = type_checker
+        self._active_coercions: set[tuple[int, int]] = set()
         self._coercion_strategies = self._build_coercion_strategies()
         self._canonical_containers = self._build_canonical_containers()
     
@@ -25,15 +26,22 @@ class Coercer:
         """
         Main entry point: attempts to coerce value to target_hint.
         """
-        # If already compatible, no coercion needed
+        guard_key = (id(value), id(target_hint))
+        if guard_key in self._active_coercions:
+            raise CoercionError(f"Recursive coercion detected for {target_hint!r}")
         try:
-            if self.type_checker.check_type(target_hint, value):
-                return value
-        except (TypeMismatchError, TypeCheckError):
-            pass
-        
-        # Otherwise, attempt smart coercion
-        return self._attempt_smart_coercion(value, target_hint)
+            self._active_coercions.add(guard_key)
+            # If already compatible, no coercion needed
+            try:
+                if self.type_checker.check_type(target_hint, value):
+                    return value
+            except (TypeMismatchError, TypeCheckError):
+                pass
+
+            # Otherwise, attempt smart coercion
+            return self._attempt_smart_coercion(value, target_hint)
+        finally:
+            self._active_coercions.discard(guard_key)
     
     def _attempt_smart_coercion(self, value: Any, target_hint: Any) -> Any:
         """
@@ -44,6 +52,12 @@ class Coercer:
         # Forward references (strings) — resolve first
         if isinstance(target_hint, str):
             return self._coerce_forward_ref(value, target_hint)
+        elif self.type_checker._is_forward_ref_hint(target_hint):
+            return self._coerce_forward_ref(value, self.type_checker._unwrap_forward_ref_hint(target_hint))
+        elif self.type_checker._is_type_alias_hint(target_hint):
+            return self.coerce(value, self.type_checker._unwrap_type_alias_hint(target_hint))
+        elif self.type_checker._is_runtime_wrapper(target_hint):
+            return self.coerce(value, self.type_checker._unwrap_runtime_wrapper(target_hint))
         elif self.type_checker._is_protocol(target_hint):
             raise CoercionError(f"Cannot coerce {type(value)} to protocol {target_hint}")
         elif self.type_checker._is_typeddict(target_hint):
@@ -80,6 +94,10 @@ class Coercer:
             if not args:
                 raise CoercionError("Annotated requires at least one type argument")
             return self.coerce(value, args[0])
+        elif form_name == 'LiteralString':
+            return self._coerce_basic_type(value, str)
+        elif form_name in {'Never', 'NoReturn'}:
+            raise CoercionError(f"Cannot coerce values to {form_name}")
         elif form_name == 'Final':
             args = get_args(target_hint)
             if args:
@@ -143,18 +161,19 @@ class Coercer:
         Literal[val1, val2, ...]: the value must be exactly one of the literal values.
         """
         args = get_args(target_hint)
-        if value in args:
-            return value
+        for literal_val in args:
+            if self.type_checker._literal_values_equal(value, literal_val):
+                return value
         
         # Attempt smart coercion toward each literal value
         for literal_val in args:
             try:
-                # If same type, try a direct conversion
-                if type(value) != type(literal_val):
-                    if isinstance(literal_val, (int, float, str, bool)):
-                        coerced = self._coerce_basic_type(value, type(literal_val))
-                        if coerced == literal_val:
-                            return coerced
+                if isinstance(value, bool) != isinstance(literal_val, bool):
+                    continue
+                if isinstance(literal_val, (int, float, str, bool)):
+                    coerced = self._coerce_basic_type(value, type(literal_val))
+                    if self.type_checker._literal_values_equal(coerced, literal_val):
+                        return coerced
             except CoercionError:
                 continue
         
@@ -179,6 +198,8 @@ class Coercer:
             return self._coerce_set_like(value, target_hint, origin, args)
         elif checker == self.type_checker._check_tuple_like:
             return self._coerce_tuple_like(value, target_hint, origin, args)
+        elif checker == self.type_checker._check_type_type:
+            return self._coerce_type_type(value, target_hint, origin, args)
         elif checker == self.type_checker._check_iterable_like:
             return self._coerce_iterable_like(value, target_hint, origin, args)
         elif checker == self.type_checker._check_collection_like:
@@ -230,7 +251,7 @@ class Coercer:
                     try:
                         converted = origin(value)
                     except Exception:
-                        converted = list(value)  # Fallback vers list
+                        converted = list(value)  # Fallback to list
         else:
             raise CoercionError(f"Cannot coerce {type(value)} to sequence")
         
@@ -271,7 +292,7 @@ class Coercer:
         preserve_type = isinstance(value, target_type)
         preferred_type = type(value) if preserve_type else canonical_type
         
-        # Convertir vers dict-like
+        # Convert to a dict-like structure
         if hasattr(value, 'items'):
             converted = dict(value.items())
         elif hasattr(value, '__iter__'):
@@ -325,18 +346,20 @@ class Coercer:
             raise CoercionError(f"Cannot coerce {type(value)} to TypedDict")
 
         annotations = getattr(target_hint, "__annotations__", {}) or {}
-        is_total = getattr(target_hint, "__total__", True)
+        required_keys = self.type_checker._typed_dict_required_keys(target_hint)
 
         # Ensure required keys are present
-        if is_total:
-            missing = [k for k in annotations.keys() if k not in data]
-            if missing:
-                raise CoercionError(f"Missing required keys for TypedDict: {missing}")
+        missing = [k for k in required_keys if k not in data]
+        if missing:
+            raise CoercionError(f"Missing required keys for TypedDict: {missing}")
 
         # Coerce annotated keys only
         for key, expected_type in annotations.items():
             if key in data:
-                data[key] = self.coerce(data[key], expected_type)
+                data[key] = self.coerce(
+                    data[key],
+                    self.type_checker._unwrap_runtime_wrapper(expected_type),
+                )
 
         return data
 
@@ -467,7 +490,7 @@ class Coercer:
         """
         target_type = self.type_checker._origin_to_type(origin)
         
-        # Convertir vers iterable d'abord
+        # Materialize to a tuple-friendly iterable first
         if isinstance(value, str):
             converted = tuple(value)  # "abc" -> ('a', 'b', 'c')
         elif hasattr(value, '__iter__'):
@@ -506,6 +529,24 @@ class Coercer:
             coerced_elements.append(coerced_item)
         
         return tuple(coerced_elements)
+
+    def _coerce_type_type(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
+        """
+        Coercion for ``type[T]`` / ``Type[T]``.
+
+        This is intentionally conservative: runtime coercion cannot synthesize a
+        class object safely, so only already-compatible class objects are accepted.
+        """
+        if not isinstance(value, type):
+            raise CoercionError(f"Cannot coerce {type(value)} to {target_hint}")
+
+        try:
+            if self.type_checker.check_type(target_hint, value):
+                return value
+        except (TypeMismatchError, TypeCheckError) as e:
+            raise CoercionError(f"Cannot coerce {value!r} to {target_hint}") from e
+
+        raise CoercionError(f"Cannot coerce {value!r} to {target_hint}")
 
     def _coerce_with_abc_checker(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
         """

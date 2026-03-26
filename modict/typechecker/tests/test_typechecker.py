@@ -10,16 +10,28 @@ from typing import (
     Iterable,
     Annotated,
     Literal,
+    LiteralString,
     Union,
     Optional,
     MutableMapping,
     MutableSequence,
     MutableSet,
     Collection,
+    Container,
+    KeysView,
+    ValuesView,
+    ItemsView,
     Deque,
     NewType,
+    Type,
     TypeVar,
     TypeAlias,
+    ForwardRef,
+    Generic,
+    Required,
+    NotRequired,
+    Never,
+    NoReturn,
     Iterator as TypingIterator,
     Generator as TypingGenerator,
 )
@@ -76,6 +88,15 @@ def test_check_type_union_optional_literal():
         check_type(Literal["a", "b"], "c")
 
 
+def test_literal_matches_exact_runtime_value_and_type():
+    assert check_type(Literal[1], 1)
+    assert check_type(Literal[False], False)
+    with pytest.raises(TypeMismatchError):
+        check_type(Literal[1], True)
+    with pytest.raises(TypeMismatchError):
+        check_type(Literal[False], 0)
+
+
 def test_check_type_typevar_and_alias():
     T = TypeVar("T")
     Alias: TypeAlias = list[int]
@@ -88,11 +109,56 @@ def test_check_type_typevar_and_alias():
         check_type(Alias, ["a", "b"])
 
 
+def test_check_type_type_hint():
+    class Base:
+        pass
+
+    class Child(Base):
+        pass
+
+    assert check_type(Type[Base], Base)
+    assert check_type(Type[Base], Child)
+    assert check_type(type[Base], Child)
+
+    with pytest.raises(TypeMismatchError):
+        check_type(Type[Child], Base)
+
+    with pytest.raises(TypeMismatchError):
+        check_type(Type[Base], Base())
+
+
+def test_check_type_forwardref_object_and_type_alias_type():
+    NodeRef = ForwardRef("Node")
+
+    class Node:
+        pass
+
+    assert check_type(NodeRef, Node())
+
+    if hasattr(__import__("typing"), "TypeAliasType"):
+        import typing
+
+        Alias = typing.TypeAliasType("Alias", list[int])
+        assert check_type(Alias, [1, 2, 3])
+        with pytest.raises(TypeMismatchError):
+            check_type(Alias, ["1"])
+
+
 def test_check_type_iterables_and_iterators():
     assert check_type(Iterable[int], [1, 2, 3])
     assert check_type(Iterator[int], iter([1, 2]))
     with pytest.raises(TypeMismatchError):
         check_type(Iterable[int], [1, "x"])
+
+
+def test_iterator_and_iterator_backed_iterable_checks_are_shape_only():
+    def gen_bad():
+        yield 1
+        yield "x"
+
+    # Iterators are intentionally treated leniently to avoid consuming them.
+    assert check_type(Iterator[int], gen_bad())
+    assert check_type(Iterable[int], gen_bad())
 
 
 def test_check_type_typed_dict_and_protocol():
@@ -120,6 +186,70 @@ def test_check_type_typed_dict_and_protocol():
     assert check_type(HasXY, adder)
 
 
+def test_typed_dict_required_and_not_required_wrappers():
+    class Payload(TypedDict, total=False):
+        user_id: Required[int]
+        nickname: NotRequired[str]
+
+    assert check_type(Payload, {"user_id": 1})
+    assert check_type(Payload, {"user_id": 1, "nickname": "ada"})
+
+    with pytest.raises(TypeMismatchError):
+        check_type(Payload, {"nickname": "ada"})
+
+    with pytest.raises(TypeMismatchError):
+        check_type(Payload, {"user_id": "1"})
+
+
+def test_container_and_mapping_view_checks_are_interface_only():
+    sample = {"a": 1, "b": 2}
+
+    # Container[T] cannot verify the accepted membership domain at runtime.
+    assert check_type(Container[int], {"x", "y"})
+
+    # Mapping views are validated by interface shape only, not by element inspection.
+    assert check_type(KeysView[int], sample.keys())
+    assert check_type(ValuesView[str], sample.values())
+    assert check_type(ItemsView[int, str], sample.items())
+
+
+def test_protocol_structural_methods_and_runtime_attrs_are_checked():
+    @runtime_checkable
+    class HasX(Protocol):
+        x: int
+
+    class HasXOk:
+        x = 3
+
+    class HasXBad:
+        x = "3"
+
+    class RunnerProto(Protocol):
+        def run(self, x: int) -> str: ...
+
+    class RunnerOk:
+        def run(self, x: int) -> str:
+            return str(x)
+
+    class RunnerBadArg:
+        def run(self, x: str) -> str:
+            return x
+
+    class RunnerBadReturn:
+        def run(self, x: int) -> int:
+            return x
+
+    assert check_type(HasX, HasXOk())
+    with pytest.raises(TypeMismatchError):
+        check_type(HasX, HasXBad())
+
+    assert check_type(RunnerProto, RunnerOk())
+    with pytest.raises(TypeMismatchError):
+        check_type(RunnerProto, RunnerBadArg())
+    with pytest.raises(TypeMismatchError):
+        check_type(RunnerProto, RunnerBadReturn())
+
+
 def test_check_type_callable_signature():
     def func(a: int, b: str) -> bool:
         return True
@@ -129,6 +259,31 @@ def test_check_type_callable_signature():
     assert check_type(Callable[[int, str], bool], func)
     with pytest.raises(TypeMismatchError):
         check_type(Callable[[int, str], bool], lambda a: True)
+
+
+def test_check_type_callable_variance():
+    from typing import Callable
+
+    def accepts_object(x: object) -> int:
+        return 1
+
+    def accepts_int(x: int) -> int:
+        return 1
+
+    def returns_bool(x: int) -> bool:
+        return True
+
+    def returns_object(x: int) -> object:
+        return 1
+
+    assert check_type(Callable[[int], int], accepts_object)
+    assert check_type(Callable[[int], int], returns_bool)
+
+    with pytest.raises(TypeMismatchError):
+        check_type(Callable[[object], int], accepts_int)
+
+    with pytest.raises(TypeMismatchError):
+        check_type(Callable[[int], int], returns_object)
 
 
 def test_check_type_newtype_and_annotated():
@@ -143,6 +298,16 @@ def test_check_type_newtype_and_annotated():
         check_type(Hint, "5")
 
 
+def test_check_type_literal_string_and_uninhabited_forms():
+    assert check_type(LiteralString, "hello")
+    with pytest.raises(TypeMismatchError):
+        check_type(LiteralString, 123)
+
+    for hint in (Never, NoReturn):
+        with pytest.raises(TypeMismatchError):
+            check_type(hint, "nope")
+
+
 def test_coerce_nested_collections_and_unions():
     result = coerce(["1", "2"], list[int])
     assert result == [1, 2]
@@ -151,6 +316,45 @@ def test_coerce_nested_collections_and_unions():
 
     with pytest.raises(Exception):
         coerce("abc", int)
+
+
+def test_coerce_type_hint_is_conservative():
+    class Base:
+        pass
+
+    class Child(Base):
+        pass
+
+    assert coerce(Child, Type[Base]) is Child
+
+    with pytest.raises(CoercionError):
+        coerce(Base, Type[Child])
+
+    with pytest.raises(CoercionError):
+        coerce(Base(), Type[Base])
+
+
+def test_coerce_forwardref_object_and_type_alias_type():
+    NodeRef = ForwardRef("Node")
+
+    class Node:
+        pass
+
+    assert isinstance(coerce(Node(), NodeRef), Node)
+
+    if hasattr(__import__("typing"), "TypeAliasType"):
+        import typing
+
+        Alias = typing.TypeAliasType("Alias", list[int])
+        assert coerce(["1", "2"], Alias) == [1, 2]
+
+
+def test_coerce_literal_uses_exact_runtime_value():
+    assert coerce("1", Literal[1]) == 1
+    with pytest.raises(CoercionError):
+        coerce(True, Literal[1])
+    with pytest.raises(CoercionError):
+        coerce(0, Literal[False])
 
 
 def test_can_coerce_with_mixed_iterables():
@@ -250,6 +454,28 @@ def test_coerce_newtype_and_typeddict():
         coerce({"name": "Alice"}, Payload)
 
 
+def test_coerce_typed_dict_required_and_not_required_wrappers():
+    class Payload(TypedDict, total=False):
+        user_id: Required[int]
+        nickname: NotRequired[str]
+
+    assert coerce({"user_id": "1"}, Payload) == {"user_id": 1}
+    assert coerce({"user_id": "1", "nickname": 2}, Payload) == {
+        "user_id": 1,
+        "nickname": "2",
+    }
+
+    with pytest.raises(CoercionError):
+        coerce({"nickname": "ada"}, Payload)
+
+
+def test_coerce_literal_string_and_uninhabited_forms():
+    assert coerce(123, LiteralString) == "123"
+    for hint in (Never, NoReturn):
+        with pytest.raises(CoercionError):
+            coerce("nope", hint)
+
+
 def test_coerce_rejects_protocol_and_callable():
     @runtime_checkable
     class HasRun(Protocol):
@@ -317,3 +543,34 @@ def test_coerce_preserves_container_type_when_elements_change():
     assert list(coerced_dq) == [1, 2]
     assert coerced_dq.maxlen == 3
 
+
+def test_recursive_type_alias_checks_without_infinite_recursion():
+    RecursiveList: TypeAlias = list["RecursiveList"]
+
+    value = []
+    value.append(value)
+
+    assert check_type(RecursiveList, value)
+
+
+def test_recursive_coercion_fails_safely_instead_of_looping():
+    RecursiveList: TypeAlias = list["RecursiveList"]
+
+    inner = []
+    value = (inner,)
+    inner.append(value)
+
+    with pytest.raises(CoercionError):
+        coerce(value, RecursiveList)
+
+
+def test_generic_instance_uses_runtime_type_arguments_when_available():
+    T = TypeVar("T")
+
+    class Box(Generic[T]):
+        def __init__(self, value: T):
+            self.value = value
+
+    assert check_type(Box[int], Box[int](1))
+    with pytest.raises(TypeMismatchError):
+        check_type(Box[int], Box[str]("x"))
