@@ -2,7 +2,7 @@
 
 import pytest
 
-from collections_utils import set_key, MISSING
+from modict.collections_utils import set_key, MISSING
 
 
 class TestSetKeyExpand:

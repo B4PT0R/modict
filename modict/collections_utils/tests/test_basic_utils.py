@@ -2,7 +2,7 @@
 
 import pytest
 
-from collections_utils import keys, has_key, unroll
+from modict.collections_utils import keys, has_key, unroll
 
 
 def test_keys_mapping_and_sequence():

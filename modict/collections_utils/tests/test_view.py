@@ -2,7 +2,7 @@
 
 import pytest
 
-from collections_utils import View
+from modict.collections_utils import View
 
 
 class KeysView(View[dict, str]):

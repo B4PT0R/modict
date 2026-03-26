@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, List
 
 from ...collections_utils import MISSING
 
@@ -14,13 +14,10 @@ class Field:
     default: Any = MISSING
     validators: List[Validator] = None  # type: ignore[assignment]
     required: bool = False
-    metadata: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.validators is None:
             self.validators = []
-        if self.metadata is None:
-            self.metadata = {}
 
     def add_validator(self, validator: Validator) -> None:
         self.validators.append(validator)
@@ -31,7 +28,6 @@ class Field:
             default=self.default if self.default is not MISSING else other.default,
             validators=(other.validators + self.validators),
             required=self.required or other.required,
-            metadata={**other.metadata, **self.metadata},
         )
 
     def get_default(self) -> Any:

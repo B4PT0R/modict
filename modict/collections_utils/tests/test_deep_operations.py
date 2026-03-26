@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from collections_utils import deep_merge, diff_nested, deep_equals, MISSING, Path, unwalk
+from modict.collections_utils import deep_merge, diff_nested, deep_equals, MISSING, Path, unwalk
 
 
 class TestDeepMerge:

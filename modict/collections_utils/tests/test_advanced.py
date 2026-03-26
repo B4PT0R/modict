@@ -2,7 +2,7 @@
 
 import pytest
 
-from collections_utils import (
+from modict.collections_utils import (
     get_nested,
     set_nested,
     has_nested,

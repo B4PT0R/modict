@@ -15,6 +15,9 @@ class _Missing:
     def __repr__(self) -> str:  # pragma: no cover
         return "MISSING"
 
+    def __bool__(self) -> bool:
+        return False
+
 
 MISSING = _Missing()
 
@@ -57,10 +60,6 @@ def _delete_in_container(container: Any, key: PathKey) -> None:
         delattr(container, key)
         return
     del container[key]  # may raise
-
-
-def _is_identifier(text: str) -> bool:
-    return text.isidentifier()
 
 
 def is_identifier(text: str) -> bool:
@@ -423,7 +422,7 @@ class Path:
             if isinstance(key, int):
                 parts.append(f"[{key}]")
             else:
-                if _is_identifier(key):
+                if is_identifier(key):
                     parts.append(f".{key}")
                 else:
                     parts.append(f"['{_escape_single_quoted(key)}']")

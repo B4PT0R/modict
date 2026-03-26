@@ -6,7 +6,7 @@ from enum import Enum
 
 import pytest
 
-from collections_utils import json_dumps, to_jsonable
+from modict.collections_utils import json_dumps, to_jsonable
 
 
 class Color(Enum):

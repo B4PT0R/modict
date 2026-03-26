@@ -23,7 +23,7 @@ from .src._types import (
     is_list_like,
 )
 
-from ...path_utils import (
+from ..path_utils import (
     Path,
     PathKey,
     PathNode,
@@ -55,6 +55,8 @@ from .src._json import (
     to_jsonable,
     json_dumps,
 )
+
+from .src._query import Query
 
 __all__ = [
     "Key",
@@ -95,4 +97,5 @@ __all__ = [
     "to_jsonable",
     "json_dumps",
     "unroll",
+    "Query",
 ]

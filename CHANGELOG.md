@@ -61,7 +61,7 @@
 - `_config.check_keys` to enable/disable structural key constraints independently from value validation.
 - `_config.override_computed` to prevent accidental overrides/deletions of computed fields (opt-in override).
 - `_config.evaluate_computed` to treat `Computed` as raw stored objects (no evaluation) for pure storage/perf mode.
-- Manual computed cache invalidation helpers: `invalidate_computed(*names)` and `invalidate_all_computed()`.
+- Manual computed cache invalidation helpers: `invalidate_computed(*names)` (no args = all).
 - Pydantic interop: preserves computed metadata (`deps`, `cache`) and modict-only `check_keys` across modict → Pydantic → modict.
 
 ### Changed

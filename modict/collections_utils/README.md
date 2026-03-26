@@ -1,302 +1,211 @@
-# _collections_utils - Infrastructure Package
+# collections_utils
 
-## Vue d'Ensemble
-
-Package d'infrastructure pour la gestion de collections, chemins et données dans Dyfract. Fournit des utilitaires robustes basés sur JSONPath (RFC 9535) pour naviguer et manipuler des structures de données imbriquées.
-
-## Position dans l'Architecture
-
-```
-dyfract/
-├── _collections_utils/    ← Package d'infrastructure (vous êtes ici)
-│   ├── _path.py           ← JSONPath avec capture d'instances
-│   ├── _types.py          ← Types et prédicats
-│   ├── _basic.py          ← Opérations de base
-│   ├── _advanced.py       ← Opérations avancées
-│   ├── _view.py           ← Vues de collections
-│   └── _missing.py        ← Sentinelle MISSING
-├── reactive_data/         ← Utilise _collections_utils
-├── backend/               ← Utilise _collections_utils
-└── ...
-```
+Infrastructure subpackage for managing collections, paths, and nested data structures in modict.
+Provides utilities based on JSONPath (RFC 9535) for navigating and manipulating nested data.
 
 ## Modules
 
-### 📍 _path.py - JSONPath Support
+### `_types.py` — Type aliases and predicates
 
-Classes pour manipulation de chemins avec métadonnées complètes.
-
-**Classes principales:**
-- `Path` - Chemin JSONPath avec composants typés
-- `PathKey` - Composant individuel (clé + métadonnées)
-
-**Fonctionnalités:**
-- ✅ Parsing/formatting JSONPath (RFC 9535)
-- ✅ Capture d'instances de conteneurs (weakref)
-- ✅ Validation dynamique de chemins
-- ✅ Résolution sûre avec gestion d'erreurs
-- ✅ Sérialisation/désérialisation
-
-**Exemples:**
 ```python
-from collections_utils import Path, PathKey
-
-# Création de chemins
-path = Path.from_jsonpath("$.users[0].name")
-path = Path.from_tuple(('users', 0, 'name'))
-
-# Résolution
-data = {'users': [{'name': 'Alice'}]}
-value = path.resolve(data)  # 'Alice'
-
-# Avec capture d'instances (types custom)
-class MyDict(dict):
-    pass
-
-root = MyDict({'a': {'b': 1}})
-path_tracked = path.with_container_types(root)
-path_tracked.is_still_valid()  # True
-
-# Manipulation
-parent_path = path.parent()
-child_path = path.add_key('email')
-```
-
-**Documentation détaillée:** [../backend/PATH_CONTAINER_CAPTURE.md](../backend/PATH_CONTAINER_CAPTURE.md)
-
-### 🔍 _types.py - Types et Prédicats
-
-Définitions de types et fonctions de vérification.
-
-**Type Aliases:**
-- `Key` - Union[int, str]
-- `Container` - Union[Mapping, Sequence]
-- `PathType` - Union[str, Tuple[Key, ...], Path]
-
-**Fonctions:**
-```python
-from collections_utils import (
+from modict.collections_utils import (
     is_container,
     is_mutable_container,
     is_dict_like,
     is_list_like,
 )
 
-is_dict_like({'a': 1})     # True
-is_list_like([1, 2, 3])    # True
-is_container({'a': 1})     # True (exclut str/bytes)
+is_dict_like({'a': 1})     # True  (MutableMapping)
+is_list_like([1, 2, 3])    # True  (MutableSequence)
+is_container({'a': 1})     # True  (excludes str/bytes/bytearray)
 ```
 
-### 🔧 _basic.py - Opérations de Base
+Type aliases: `Key`, `Container`, `MutableContainer`, `PathType`, `Namespace`, `MutableCollection`.
 
-Opérations simples sur conteneurs.
+- `Namespace`: `MutableMapping` view over a class namespace (`cls.__dict__`); used internally by the metaclass.
+- `MutableCollection`: abstract base combining `Collection` + mutable item access (`__getitem__`, `__setitem__`, `__delitem__`).
 
-**Fonctions:**
+### `_basic.py` — Container-agnostic key operations
+
+Uniform `get`/`set`/`has`/`keys` that work on both `Mapping` and `Sequence`:
+
 ```python
-from collections_utils import (
-    get_key,
-    set_key,
-    has_key,
-    keys,
-    unroll,
-)
+from modict.collections_utils import get_key, set_key, has_key, keys, unroll
 
-# get_key, set_key, has_key - comme dict mais marche sur Mapping/Sequence
 has_key(data, 'name')
 value = get_key(data, 'name', default='Unknown')
 set_key(data, 'name', 'Alice')
 
-# Itération
 for key in keys(data):
     print(key, get_key(data, key))
 ```
 
-### ⚙️ _advanced.py - Opérations Avancées
+`set_key` on a `MutableSequence` will auto-expand the list for out-of-range indices (filling gaps with `MISSING`) unless `expand=False` is passed. A custom `filler` value can be specified:
 
-Opérations complexes sur structures imbriquées.
-
-**Fonctions principales:**
 ```python
-from collections_utils import (
-    get_nested,
-    set_nested,
-    del_nested,
-    has_nested,
-    walk,
-    deep_merge,
-    deep_equals,
-    diff_nested,
+items = [1, 2]
+set_key(items, 5, 'x', filler=None)
+# items == [1, 2, None, None, None, 'x']
+```
+
+`unroll(obj)` yields `(key, value)` pairs from any container (equivalent to `.items()` for dicts, `enumerate` for sequences).
+
+### `_advanced.py` — Nested operations
+
+#### Nested access
+
+```python
+from modict.collections_utils import (
+    get_nested, set_nested, pop_nested, del_nested, has_nested,
 )
 
-# Accès imbriqué (chemins)
-value = get_nested(data, ['users', 0, 'name'])
-set_nested(data, ['users', 0, 'email'], 'alice@example.com')
+# All accept JSONPath strings, tuples, or Path objects
+value = get_nested(data, 'users[0].name', default=None)
+set_nested(data, 'users[0].email', 'alice@example.com')  # creates intermediate containers as needed
+has_nested(data, 'users[0].name')   # True/False
+val = pop_nested(data, 'users[0].name')   # removes and returns
+del_nested(data, 'users[0].name')         # removes (delegates to pop_nested)
+```
 
-# Parcours récursif
+#### Traversal
+
+```python
+from modict.collections_utils import walk, walked, unwalk
+
+# walk yields (Path, value) for every leaf
 for path, value in walk(data):
     print(f"{path}: {value}")
 
-# Fusion profonde
-merged = deep_merge(dict1, dict2)
+# Optional parameters:
+# - callback: transform each leaf value
+# - filter: predicate(Path, value) -> bool to skip leaves
+# - excluded: tuple of types to treat as leaves (default: str, bytes, bytearray)
+for path, value in walk(data, callback=str, filter=lambda p, v: v is not None):
+    print(path, value)
 
-# Comparaison
-are_equal = deep_equals(data1, data2)
-differences = diff_nested(data1, data2)
+# walked returns a dict instead of an iterator
+snapshot = walked(data)
+
+# unwalk reconstructs from a {Path: value} dict
+restored = unwalk(snapshot)
+# ignore_types=True forces plain dict/list instead of preserving original container types
+restored = unwalk(snapshot, ignore_types=True)
 ```
 
-### 👁️ _view.py - Vues de Collections
-
-Vue read-only sur collections.
+#### Deep operations
 
 ```python
-from collections_utils import View
+from modict.collections_utils import deep_merge, deep_equals, diff_nested
 
-view = View(my_dict)
-# Lecture seule, mutations propagées à l'original
+# deep_merge: modifies target in-place, returns None
+# Mappings merge by key (recursive), sequences merge by index
+deep_merge(base_config, overrides)
+
+# conflict_resolver(target_value, src_value) -> merged_value for scalar conflicts
+deep_merge(base, patch, conflict_resolver=lambda old, new: new)
+
+# Setting a value to MISSING in src deletes that key from target
+from modict.collections_utils import MISSING
+deep_merge(target, {'key_to_remove': MISSING})
+
+# diff: returns {Path: (left_value, right_value)}; MISSING means absent on that side
+differences = diff_nested(config_a, config_b)
+
+# deep_equals compares by walking both structures — only leaf values and their paths
+# matter, not container types (a modict and a plain dict with the same contents are equal)
+assert deep_equals(config_a, config_a_copy)
 ```
 
-### ⚠️ _missing.py - Sentinelle
+### `_view.py` — Collection views
+
+`View` is an abstract base class for read-only views over containers. Subclass it and implement `_get_element(key)`:
 
 ```python
-from collections_utils import MISSING
+from modict.collections_utils import View
+
+class ValuesView(View):
+    def _get_element(self, key):
+        return self.data[key]
+
+view = ValuesView(my_dict)
+list(view)          # all values
+len(view)           # same as len(my_dict)
+'x' in view         # membership test
+```
+
+### `_missing.py` — MISSING sentinel
+
+```python
+from modict.collections_utils import MISSING
 
 def func(arg=MISSING):
     if arg is MISSING:
-        # Pas fourni
+        # not provided
         ...
 ```
 
-### 🧾 _json.py - Helpers JSON
+`MISSING` is also used by `deep_merge` as a deletion signal and by `diff_nested` to indicate an absent value on one side.
 
-Petits helpers pour produire des payloads JSON (sans ajouter de logique “métier”):
+### `_json.py` — JSON serialization helpers
 
 ```python
+from modict.collections_utils import to_jsonable, json_dumps
 from datetime import datetime
-from collections_utils import to_jsonable, json_dumps
 
+# to_jsonable: recursively converts to JSON-safe types
+# - Mapping → dict
+# - tuple/set/Sequence → list
+# - leaves are passed through as-is (json.dumps raises if non-serializable and no encoder matches)
 payload = to_jsonable(
     {"ts": datetime(2020, 1, 1), "tags": {"a", "b"}},
     encoders={datetime: lambda dt: dt.isoformat()},
-)
-assert payload == {"ts": "2020-01-01T00:00:00", "tags": ["a", "b"]}
-
-text = json_dumps(payload, indent=2, sort_keys=True)
-```
-
-## Import Simplifié
-
-Tout est accessible depuis le package principal:
-
-```python
-# Import complet
-from collections_utils import (
-    Path,
-    PathKey,
-    is_dict_like,
-    is_list_like,
-    get_nested,
-    walk,
-    deep_merge,
+    exclude_none=True,      # drop keys with None values
+    use_enum_values=False,  # if True, Enum → .value
 )
 
-# Ou imports spécifiques
-from collections_utils._path import Path
-from collections_utils._advanced import walk
+# json_dumps: to_jsonable + json.dumps in one call
+text = json_dumps(payload, encoders={...}, exclude_none=True, indent=2, sort_keys=True)
 ```
 
-## Cas d'Usage Typiques
+### `_query.py` — Query
 
-### 1. Navigation de Données Complexes
+`Query` combines a path constraint and a value constraint into a single searchable object.
 
 ```python
-from collections_utils import Path, get_nested
+from modict import Query, MISSING
 
-# Données API
-api_response = {
-    'data': {
-        'users': [
-            {'id': 1, 'profile': {'name': 'Alice'}},
-            {'id': 2, 'profile': {'name': 'Bob'}}
-        ]
-    }
-}
+# path : MISSING (any — default), JSONPath str (wildcards ok), Path/tuple (exact), callable(Path)->bool
+# value: MISSING (any — default), callable(value)->bool, or any literal including None (equality check)
 
-# Avec Path
-path = Path.from_jsonpath("$.data.users[0].profile.name")
-name = path.resolve(api_response)
+# All users with age > 30
+Query("$.users[*].age", lambda v: v > 30).find(data)
 
-# Ou avec get_nested
-name = get_nested(api_response, ['data', 'users', 0, 'profile', 'name'])
+# Any leaf whose last key is "email"
+Query(lambda p: p.keys[-1] == "email").find(data)
+
+# Exact path, exact value
+Query(("users", 0, "name"), "Alice").find(data)
+
+# Find all leaves whose value is None (not "no constraint" — that would be MISSING)
+Query(value=None).find(data)
+
+# Value predicate only — walks everything
+Query(value=lambda v: isinstance(v, str) and "@" in v).find(data)
 ```
 
-### 2. Modification Sûre de Structures
+`find(root)` returns a `list[tuple[Path, Any]]` — consistent with `walk`.
+
+When `path` is a JSONPath string the JSONPath engine is used (supports `*`, `..`, filters, etc.). Otherwise the full structure is walked with the predicates.
+
+`matches(path, value)` tests a single pair. Note: wildcard JSONPath strings fall back to exact `str(path)` comparison in `matches` — use `find` when wildcard matching is needed.
+
+## Path support
+
+`Path` and `PathNode` are re-exported from `modict.path_utils`. See [../path_utils/README.md](../path_utils/README.md) for full documentation.
 
 ```python
-from collections_utils import set_nested, has_nested
+from modict.collections_utils import Path, PathNode
 
-# Vérification avant modification
-if has_nested(config, ['server', 'port']):
-    set_nested(config, ['server', 'port'], 8080)
+p = Path("$.users[0].name")
+value = p.resolve(data)
 ```
-
-### 3. Comparaison et Fusion
-
-```python
-from collections_utils import deep_equals, deep_merge, diff_nested
-
-# Comparer configurations
-if not deep_equals(config_prod, config_staging):
-    differences = diff_nested(config_prod, config_staging)
-    print("Différences:", differences)
-
-# Fusionner avec priorité
-final_config = deep_merge(default_config, user_config)
-```
-
-### 4. Validation Dynamique (Types Custom)
-
-```python
-from collections_utils import Path
-
-class ObservableDict(dict):
-    pass
-
-data = ObservableDict({'users': ObservableDict({'alice': {'age': 30}})})
-
-# Capture instances
-path = Path.from_jsonpath("$.users.alice.age")
-tracked = path.with_container_types(data)
-
-# Validation dynamique
-assert tracked.is_still_valid()  # True
-
-del data['users']['alice']
-assert not tracked.is_still_valid()  # False - détecté!
-```
-
-## Tests
-
-```bash
-python -m pytest
-```
-
-## Migration depuis reactive_data/collections_utils.py
-
-Voir [MIGRATION_REACTIVE_DATA.md](../../MIGRATION_REACTIVE_DATA.md)
-
-## Évolutions Futures
-
-- [ ] Port JavaScript pour frontend (Path.js)
-- [ ] Intégration avec système réactif (reactive_data)
-- [ ] Support de patterns JSONPath avancés (filtres, slices)
-- [ ] Cache de résolution de chemins
-- [ ] Validation de schemas basée sur chemins
-
-## Philosophie
-
-Ce package suit les principes:
-1. **Robustesse** - Gestion explicite des erreurs
-2. **Typage** - Métadonnées riches pour débogage
-3. **Standards** - JSONPath RFC 9535
-4. **Performance** - Weak refs, pas de copies inutiles
-5. **Simplicité** - API claire et documentée
