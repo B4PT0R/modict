@@ -341,6 +341,13 @@ class TypeChecker:
             raise TypeCheckError(f"Invalid TypeAliasType payload: {hint!r}")
         return value
 
+    def _resolved_annotations(self, hint: Any) -> dict[str, Any]:
+        """Return annotations with extras preserved when the runtime supports it."""
+        try:
+            return typing.get_type_hints(hint, include_extras=True)
+        except Exception:
+            return getattr(hint, "__annotations__", {}) or {}
+
     def _literal_values_equal(self, left: Any, right: Any) -> bool:
         """Compare literal values while keeping bool and int distinct."""
         return type(left) is type(right) and left == right
@@ -348,20 +355,20 @@ class TypeChecker:
     def _typed_dict_required_keys(self, hint: Any) -> set[str]:
         """Return the required keys for a TypedDict, including Required/NotRequired overrides."""
         required = getattr(hint, "__required_keys__", None)
-        optional = getattr(hint, "__optional_keys__", None)
-        if required is not None or optional is not None:
-            return set(required or ())
+        required_names = set(required or ())
 
-        annotations = getattr(hint, "__annotations__", {}) or {}
+        annotations = self._resolved_annotations(hint)
         is_total = getattr(hint, "__total__", True)
-        required_keys: set[str] = set()
+        required_keys: set[str] = set(required_names)
         for name, annotation in annotations.items():
             origin = get_origin(annotation)
             if origin in self._required_wrapper_origins:
                 required_keys.add(name)
             elif origin in self._notrequired_wrapper_origins:
-                continue
+                required_keys.discard(name)
             elif is_total:
+                required_keys.add(name)
+            elif name in required_names:
                 required_keys.add(name)
         return required_keys
 
@@ -388,7 +395,7 @@ class TypeChecker:
             if base is typing.Protocol or base is object or not getattr(base, "_is_protocol", False):
                 continue
 
-            base_annotations = getattr(base, "__annotations__", {})
+            base_annotations = self._resolved_annotations(base)
             for name in self._protocol_member_names(base):
                 if name in base_annotations:
                     members[name] = self._unwrap_runtime_wrapper(base_annotations[name])
@@ -1931,11 +1938,14 @@ class TypeChecker:
         Returns:
             bool: True if value implements the Protocol
         """
-        # For runtime_checkable protocols, first enforce the runtime presence check.
+        # For runtime_checkable protocols, probe isinstance() only to benefit from
+        # the runtime's own fast-paths, but do not trust a positive result as the
+        # final answer on older Python versions. Python 3.10/3.11 can accept
+        # protocols with non-method members too loosely, so we always validate the
+        # declared members structurally below.
         if getattr(hint, "_is_runtime_protocol", False):
             try:
-                if not isinstance(value, hint):
-                    return False
+                isinstance(value, hint)
             except TypeError:
                 # Python < 3.12 may refuse isinstance() on runtime protocols
                 # that declare non-method members. Fall back to explicit member checks.
