@@ -4,6 +4,7 @@ import pytest
 import modict.typechecker.src._public_api as public_api
 
 from typing import (
+    Any,
     TypedDict,
     Protocol,
     runtime_checkable,
@@ -58,6 +59,15 @@ def test_check_type_success_and_failure():
         check_type(int, "not an int")
 
 
+def test_check_type_fast_path_keeps_scalar_runtime_semantics():
+    assert check_type(object, 1) is True
+    assert check_type(Any, "value") is True
+    assert check_type(type(None), None) is True
+
+    with pytest.raises(TypeMismatchError):
+        check_type(int, True)
+
+
 def test_coerce_and_can_coerce():
     assert coerce("42", int) == 42
     assert coerce(("a", "b"), list[str]) == ["a", "b"]
@@ -91,6 +101,53 @@ def test_reset_global_coercer_only_rebuilds_coercer_singleton():
 
     assert coercer_after is not coercer_before
     assert coercer_after.type_checker is checker_before
+
+
+def test_typechecker_reuses_compiled_hint_plans_for_repeated_hints():
+    checker = public_api.TypeChecker()
+    hint = list[dict[str, int]]
+
+    plan_first = checker._compile_hint(hint)
+    plan_second = checker._compile_hint(hint)
+
+    assert plan_first is plan_second
+    assert checker._compiled_hint_cache[hint] is plan_first
+
+    assert checker.check_type(hint, [{"a": 1}, {"b": 2}]) is True
+    cache_size = len(checker._compiled_hint_cache)
+    assert checker.check_type(hint, [{"c": 3}]) is True
+    assert len(checker._compiled_hint_cache) == cache_size
+
+
+def test_coercer_reuses_compiled_coercion_plans_for_repeated_hints():
+    checker = public_api.TypeChecker()
+    coercer = public_api.Coercer(checker)
+    hint = list[int]
+
+    plan_first = coercer._compile_coercion_plan(hint)
+    plan_second = coercer._compile_coercion_plan(hint)
+
+    assert plan_first is plan_second
+    assert coercer._coercion_plan_cache[hint] is plan_first
+
+    assert coercer.coerce(["1", "2"], hint) == [1, 2]
+    cache_size = len(coercer._coercion_plan_cache)
+    assert coercer.coerce(("3", "4"), hint) == [3, 4]
+    assert len(coercer._coercion_plan_cache) == cache_size
+
+
+def test_typechecker_and_coercer_caches_can_be_disabled():
+    checker = public_api.TypeChecker(use_cache=False)
+    coercer = public_api.Coercer(checker, use_cache=False)
+    hint = list[int]
+
+    assert checker._compile_hint(hint) is not checker._compile_hint(hint)
+    assert coercer._compile_coercion_plan(hint) is not coercer._compile_coercion_plan(hint)
+    assert checker._compiled_hint_cache == {}
+    assert coercer._coercion_plan_cache == {}
+
+    assert checker.check_type(hint, [1, 2]) is True
+    assert coercer.coerce(["1", "2"], hint) == [1, 2]
 
 
 def test_typechecked_decorator_checks_args_and_return():

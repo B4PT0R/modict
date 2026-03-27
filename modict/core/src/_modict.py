@@ -312,6 +312,11 @@ class modict(dict, metaclass=modictMeta):
             args = (data,)
 
         super().__init__(*args,**kwargs)
+        object.__setattr__(
+            self,
+            "_computed_field_count",
+            sum(1 for value in dict.values(self) if isinstance(value, Computed)),
+        )
         self._extract_attribute_wrappers()
 
         # Inject defaults and computed
@@ -322,10 +327,10 @@ class modict(dict, metaclass=modictMeta):
                     # During model instantiation/casting, target-class Computed fields
                     # always win over incoming data so the resulting instance respects
                     # the target model contract.
-                    dict.__setitem__(self, key, value)
+                    self._raw_setitem(key, value)
                 else:
                     if key not in self:
-                        dict.__setitem__(self, key, value)
+                        self._raw_setitem(key, value)
 
         # Enforce key-level constraints (required/extra/require_all) independently of value checking.
         if self._check_keys_enabled():
@@ -351,30 +356,44 @@ class modict(dict, metaclass=modictMeta):
             raise AttributeError(
                 f"Cannot assign attribute '{key}': '{type(self).__name__}.{key}' already exists. "
                 "Use a different name for metadata attributes."
-            )
+        )
         object.__setattr__(self, key, value.value)
+
+    def _raw_setitem(self, key, value) -> None:
+        existing = dict.get(self, key, MISSING)
+        if isinstance(existing, Computed):
+            object.__setattr__(self, "_computed_field_count", self._computed_field_count - 1)
+        dict.__setitem__(self, key, value)
+        if isinstance(value, Computed):
+            object.__setattr__(self, "_computed_field_count", self._computed_field_count + 1)
+
+    def _raw_delitem(self, key) -> None:
+        existing = dict.__getitem__(self, key)
+        if isinstance(existing, Computed):
+            object.__setattr__(self, "_computed_field_count", self._computed_field_count - 1)
+        dict.__delitem__(self, key)
+
+    def _raw_clear(self) -> None:
+        dict.clear(self)
+        object.__setattr__(self, "_computed_field_count", 0)
 
     def _check_keys_enabled(self) -> bool:
         """Return True if modict should enforce key-level structural constraints."""
-        if not getattr(self._config, "check_keys", True):
+        config = self._config
+        if not config.check_keys:
             return False
 
-        # True: enable when the instance/class declares key constraints
-        fields = getattr(self, "__fields__", {}) or {}
-        has_required = any(bool(getattr(f, "required", False)) for f in fields.values())
-        has_computed = any(isinstance(getattr(f, "default", None), Computed) for f in fields.values())
+        if config.require_all or config.extra != "allow":
+            return True
+
+        cls = type(self)
+        if cls.__has_required_fields__ or cls.__has_declared_computed_fields__:
+            return True
+
         # Also enable key checks as soon as the instance contains computed fields.
         # This preserves the default "computed override protection" even for plain `modict`
         # instances where computeds are inserted dynamically at runtime.
-        has_runtime_computed = any(isinstance(v, Computed) for v in dict.values(self))
-        wants_key_processing = bool(
-            self._config.require_all
-            or self._config.extra != "allow"
-            or has_required
-            or has_computed
-            or has_runtime_computed
-        )
-        return wants_key_processing
+        return bool(self._computed_field_count)
 
     def _enforce_extra_policy(self) -> None:
         """Enforce extra key policy (allow/forbid/ignore)."""
@@ -398,7 +417,7 @@ class modict(dict, metaclass=modictMeta):
                 keys_to_remove.append(key)
 
         for key in keys_to_remove:
-            dict.__delitem__(self, key)
+            self._raw_delitem(key)
 
     def _check_required_fields(self) -> None:
         if not self._check_keys_enabled():
@@ -418,21 +437,24 @@ class modict(dict, metaclass=modictMeta):
                 raise KeyError(f"Missing required field '{name}'")
 
     def validate(self):
-        if (not self._check_values_enabled()) and (not self._check_keys_enabled()):
+        values_enabled = self._check_values_enabled()
+        keys_enabled = self._check_keys_enabled()
+
+        if (not values_enabled) and (not keys_enabled):
             return
 
-        if self._check_keys_enabled():
+        if keys_enabled:
             self._enforce_extra_policy()
             self._check_required_fields()
 
         # Model-level validators (pre)
         self._run_model_validators(mode="before")
         # A "before" model validator may have replaced the underlying mapping.
-        if self._check_keys_enabled():
+        if keys_enabled:
             self._enforce_extra_policy()
             self._check_required_fields()
 
-        if not self._check_values_enabled():
+        if not values_enabled:
             return
 
         keys_to_remove = []
@@ -455,40 +477,29 @@ class modict(dict, metaclass=modictMeta):
                 continue
 
             # 3. Validate and store
-            dict.__setitem__(self, key, self._check_value(key, value))
+            self._raw_setitem(key, self._check_value(key, value))
 
         # Remove ignored keys after iteration
         for key in keys_to_remove:
-            dict.__delitem__(self, key)
+            self._raw_delitem(key)
 
         # Model-level validators (post)
         self._run_model_validators(mode="after")
 
     def _check_values_enabled(self) -> bool:
         """Return True if modict should run its value/key checking pipeline."""
-        if not getattr(self._config, "check_values", True):
+        config = self._config
+        if not config.check_values:
             return False
 
-        # True: enable when the class looks "model-like"
-        has_hints = any(
-            (field.hint is not None)
-            for field in getattr(self, "__fields__", {}).values()
-        )
-        has_validators = any(
-            bool(getattr(field, "validators", []))
-            for field in getattr(self, "__fields__", {}).values()
-        )
-        has_model_validators = bool(getattr(self, "__model_validators__", ()))
-        wants_value_processing = any(
-            (
-                self._config.enforce_json,
-                self._config.validate_assignment,
-                self._config.strict,
-            )
-        )
-        wants_key_processing = (self._config.extra != "allow")
+        cls = type(self)
+        if cls.__has_field_hints__ or cls.__has_field_validators__ or cls.__has_model_validators__:
+            return True
 
-        return bool(has_hints or has_validators or has_model_validators or wants_value_processing or wants_key_processing)
+        if config.enforce_json or config.validate_assignment or config.strict:
+            return True
+
+        return config.extra != "allow"
 
     def _run_model_validators(self, *, mode: Literal["before", "after"]) -> None:
         """Run model-level validators for a given phase."""
@@ -510,17 +521,19 @@ class modict(dict, metaclass=modictMeta):
             if isinstance(result, AbcMapping):
                 if mode == "before":
                     # Apply raw updates; field validation will happen afterwards.
-                    dict.clear(self)
-                    dict.update(self, result)
+                    self._raw_clear()
+                    for key, value in result.items():
+                        self._raw_setitem(key, value)
                 else:
                     # Apply updates through the normal assignment policy so key
                     # constraints, computed protection, and cache invalidation
                     # remain consistent even when validate_assignment=False.
+                    validate_value = self._check_values_enabled()
                     for key, value in result.items():
                         self._store_item(
                             key,
                             value,
-                            validate_value=self._check_values_enabled(),
+                            validate_value=validate_value,
                         )
                 continue
             raise TypeError(
@@ -643,6 +656,8 @@ class modict(dict, metaclass=modictMeta):
         invalidate_dependants(self, changed_keys)
 
     def _invalidate_all(self):
+        if not getattr(self, "_computed_field_count", 0):
+            return
         for value in dict.values(self):
             if isinstance(value, Computed):
                 value.invalidate_cache()
@@ -690,7 +705,7 @@ class modict(dict, metaclass=modictMeta):
         new = self._auto_convert_value(value)
         if new is not value:
             # Write raw to avoid re-triggering the full validation pipeline
-            dict.__setitem__(self, key, new)
+            self._raw_setitem(key, new)
             return new
         return value
 
@@ -713,15 +728,15 @@ class modict(dict, metaclass=modictMeta):
             "Set frozen=False in config to allow modifications."
         )
 
-    def _enforce_assignment_policy(self, key, value) -> bool:
+    def _enforce_assignment_policy(self, key, value, *, check_keys_enabled: bool) -> bool:
         # Prevent accidental overwrites of computed fields unless explicitly allowed.
         # This is a key-level constraint, controlled by check_keys.
-        if self._check_keys_enabled():
+        if check_keys_enabled:
             existing = dict.get(self, key, MISSING)
             if isinstance(existing, Computed) and not getattr(self._config, "override_computed", False):
                 raise TypeError(f"Cannot override computed field '{key}' (override_computed=False)")
 
-        if self._check_keys_enabled():
+        if check_keys_enabled:
             # Handle extra keys based on config
             if key not in self.__fields__:
                 if self._config.extra == 'forbid':
@@ -737,20 +752,37 @@ class modict(dict, metaclass=modictMeta):
 
     def _store_item(self, key, value, *, validate_value: bool) -> None:
         self._check_mutable("assign", key=key)
-        should_store = self._enforce_assignment_policy(key, value)
+        check_keys_enabled = self._check_keys_enabled()
+        should_store = self._enforce_assignment_policy(key, value, check_keys_enabled=check_keys_enabled)
         if not should_store:
             return
+
+        existing = dict.get(self, key, MISSING)
 
         # Computed objects are stored raw — no validation, but they still
         # replace the logical value behind this key and must invalidate dependants.
         if isinstance(value, Computed):
-            dict.__setitem__(self, key, value)
+            self._raw_setitem(key, value)
             self._invalidate_dependants({key})
             return
 
+        # Fast path: if the raw stored value is already the same object or the
+        # same concrete value, skip validation/coercion and cache invalidation.
+        # Keep this strict enough that `"3"` -> `3` still goes through the
+        # pipeline for typed fields.
+        if existing is not MISSING and not isinstance(existing, Computed):
+            if existing is value:
+                return
+            if type(existing) is type(value):
+                try:
+                    if existing == value:
+                        return
+                except Exception:
+                    pass
+
         if validate_value:
             value = self._check_value(key, value)
-        dict.__setitem__(self, key, value)
+        self._raw_setitem(key, value)
         self._invalidate_dependants({key})
 
     # changed dict methods
@@ -805,7 +837,8 @@ class modict(dict, metaclass=modictMeta):
 
     def __delitem__(self, key):
         self._check_mutable("delete", key=key)
-        if self._check_keys_enabled():
+        check_keys_enabled = self._check_keys_enabled()
+        if check_keys_enabled:
             # If require_all=True, declared fields must always be present.
             if bool(getattr(self._config, "require_all", False)) and key in getattr(self, "__fields__", {}):
                 raise TypeError(f"Cannot delete declared field '{key}' (require_all=True)")
@@ -813,7 +846,7 @@ class modict(dict, metaclass=modictMeta):
             if isinstance(existing, Computed) and not getattr(self._config, "override_computed", False):
                 raise TypeError(f"Cannot delete computed field '{key}' (override_computed=False)")
         # Let KeyError propagate naturally if key is missing
-        dict.__delitem__(self, key)
+        self._raw_delitem(key)
         self._invalidate_dependants({key})
 
     def __repr__(self):
@@ -888,14 +921,27 @@ class modict(dict, metaclass=modictMeta):
         Overrides dict.update() which would bypass __setitem__ in CPython.
         Matches the native dict.update() signature (positional-only first arg).
         """
+        validate_value = self._check_values_enabled() and self._config.validate_assignment
+        store_item = self._store_item
+        store_attribute = self._store_attribute
+
         if hasattr(other, 'items'):
             for key, value in other.items():
-                self[key] = value
+                if isinstance(value, Attribute):
+                    store_attribute(key, value)
+                else:
+                    store_item(key, value, validate_value=validate_value)
         else:
             for key, value in other:
-                self[key] = value
+                if isinstance(value, Attribute):
+                    store_attribute(key, value)
+                else:
+                    store_item(key, value, validate_value=validate_value)
         for key, value in kwargs.items():
-            self[key] = value
+            if isinstance(value, Attribute):
+                store_attribute(key, value)
+            else:
+                store_item(key, value, validate_value=validate_value)
 
     @classmethod
     def _new_empty_like(cls, *, config=None):
@@ -903,6 +949,7 @@ class modict(dict, metaclass=modictMeta):
         new = dict.__new__(cls)
         source_config = config if config is not None else type(new)._config
         object.__setattr__(new, "_config", source_config.copy())
+        object.__setattr__(new, "_computed_field_count", 0)
         return new
 
     def copy(self):
@@ -913,12 +960,12 @@ class modict(dict, metaclass=modictMeta):
         """
         new = type(self)._new_empty_like(config=self._config)
         for key, value in self.__dict__.items():
-            if key == "_config":
+            if key in {"_config", "_computed_field_count"}:
                 continue
             object.__setattr__(new, key, value)
         for key, value in dict.items(self):
             cloned = value.copy() if isinstance(value, Computed) else value
-            dict.__setitem__(new, key, cloned)
+            new._raw_setitem(key, cloned)
         return new
 
     def __copy__(self):
@@ -1004,19 +1051,20 @@ class modict(dict, metaclass=modictMeta):
 
     def clear(self):
         self._check_mutable("clear")
+        check_keys_enabled = self._check_keys_enabled()
         if (
-            self._check_keys_enabled()
+            check_keys_enabled
             and bool(getattr(self._config, "require_all", False))
             and getattr(self, "__fields__", None)
         ):
             raise TypeError("Cannot clear a model with require_all=True")
         if (
-            self._check_keys_enabled()
+            check_keys_enabled
             and not getattr(self._config, "override_computed", False)
-            and any(isinstance(value, Computed) for value in dict.values(self))
+            and getattr(self, "_computed_field_count", 0)
         ):
             raise TypeError("Cannot clear computed fields (override_computed=False)")
-        dict.clear(self)
+        self._raw_clear()
         self._invalidate_all()
 
     # additonal methods
@@ -1177,7 +1225,7 @@ class modict(dict, metaclass=modictMeta):
                 items = unroll(obj)
             for k, v in items:
                 if isinstance(obj, modict):
-                    dict.__setitem__(obj, k, cls.convert(v, seen, root=False, recurse=recurse))
+                    obj._raw_setitem(k, cls.convert(v, seen, root=False, recurse=recurse))
                 else:
                     obj[k] = cls.convert(v, seen, root=False, recurse=recurse)
 
@@ -1433,7 +1481,7 @@ class modict(dict, metaclass=modictMeta):
         translated = modict._new_empty_like()
         for key, value in dict.items(self):
             raw = value.copy() if isinstance(value, Computed) else value
-            dict.__setitem__(translated, mapping.get(key, key), raw)
+            translated._raw_setitem(mapping.get(key, key), raw)
         return translated
         
     def exclude(self, *excluded_keys):
@@ -1768,12 +1816,12 @@ class modict(dict, metaclass=modictMeta):
         new = type(self)._new_empty_like(config=self._config)
         memo[id(self)] = new
         for key, value in self.__dict__.items():
-            if key == "_config":
+            if key in {"_config", "_computed_field_count"}:
                 continue
             object.__setattr__(new, key, copy.deepcopy(value, memo))
         for key, value in dict.items(self):
             cloned = value.copy() if isinstance(value, Computed) else copy.deepcopy(value, memo)
-            dict.__setitem__(new, key, cloned)
+            new._raw_setitem(key, cloned)
         return new
     
     # JSON support

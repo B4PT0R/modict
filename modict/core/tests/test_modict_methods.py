@@ -151,6 +151,55 @@ class TestAttributeAccess:
         assert m.source == "crm"
         assert m.has_attr("source") is True
 
+    def test_setitem_same_typed_value_skips_validation_and_computed_invalidation(self):
+        calls = {"validator": 0, "computed": 0}
+
+        class Payload(modict):
+            _config = modict.config(validate_assignment=True)
+            count: int
+
+            @modict.validator("count", mode="after")
+            def validate_count(self, value):
+                calls["validator"] += 1
+                return value
+
+            @modict.computed(cache=True, deps=["count"])
+            def doubled(self):
+                calls["computed"] += 1
+                return self.count * 2
+
+        payload = Payload(count=1)
+
+        assert calls["validator"] == 1
+        assert payload.doubled == 2
+        assert calls["computed"] == 1
+
+        payload["count"] = 1
+
+        assert calls["validator"] == 1
+        assert payload.doubled == 2
+        assert calls["computed"] == 1
+
+    def test_setitem_same_logical_value_with_different_raw_type_still_runs_pipeline(self):
+        calls = {"validator": 0}
+
+        class Payload(modict):
+            _config = modict.config(validate_assignment=True)
+            count: int
+
+            @modict.validator("count", mode="after")
+            def validate_count(self, value):
+                calls["validator"] += 1
+                return value
+
+        payload = Payload(count=1)
+        assert calls["validator"] == 1
+
+        payload["count"] = "1"
+
+        assert payload.count == 1
+        assert calls["validator"] == 2
+
 
 # ---------------------------------------------------------------------------
 # get_nested / set_nested / has_nested / del_nested / pop_nested
@@ -252,6 +301,18 @@ class TestTranslateExcludeExtract:
         assert "double" in m
         assert "twice" not in m
 
+    def test_translate_keeps_computed_protection_state_consistent_after_deletion(self):
+        m = modict(a=1)
+        m["double"] = Computed(lambda m: m.a * 2)
+        translated = m.translate(double="twice")
+
+        translated._config.override_computed = True
+        del translated["twice"]
+        translated._config.override_computed = False
+
+        translated.clear()
+        assert translated == {}
+
     def test_translate_returns_plain_modict_for_typed_model(self):
         typed = Typed(x=1, y=2)
         translated = typed.translate(x="X")
@@ -331,6 +392,24 @@ class TestDeepcopy:
         assert isinstance(dict.__getitem__(c, "doubled"), Computed)
         assert dict.__getitem__(c, "doubled") is not dict.__getitem__(m, "doubled")
         assert c["doubled"] == 4
+
+    def test_deepcopy_keeps_computed_protection_state_consistent_after_deletion(self):
+        class Calc(modict):
+            a: int
+
+            @modict.computed(cache=True, deps=["a"])
+            def doubled(self):
+                return self.a * 2
+
+        m = Calc(a=2)
+        c = m.deepcopy()
+
+        c._config.override_computed = True
+        del c["doubled"]
+        c._config.override_computed = False
+
+        c.clear()
+        assert c == {}
 
     def test_copy_deepcopy_preserves_self_reference(self):
         m = modict()

@@ -180,6 +180,17 @@ class modictMeta(type):
         dct['__fields__'] = fields
         dct["__model_validators__"] = tuple(model_validators)
         dct["__attributes__"] = attributes
+        dct["__has_field_hints__"] = any(field.hint is not None for field in fields.values())
+        dct["__has_field_validators__"] = any(
+            bool(getattr(field, "validators", ())) for field in fields.values()
+        )
+        dct["__has_required_fields__"] = any(
+            bool(getattr(field, "required", False)) for field in fields.values()
+        )
+        dct["__has_declared_computed_fields__"] = any(
+            isinstance(getattr(field, "default", None), Computed) for field in fields.values()
+        )
+        dct["__has_model_validators__"] = bool(model_validators)
 
         # Setup _config using modictConfig with proper MRO merging
 

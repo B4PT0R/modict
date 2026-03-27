@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from ._typechecker import TypeChecker, TypeMismatchError, TypeCheckError
 from typing import Any, Dict, List, Set, Tuple, Union, Optional, Callable, TypeVar, get_origin, get_args
 
@@ -9,6 +11,15 @@ class CoercionError(Exception):
     """Exception raised when coercion is not possible."""
     pass
 
+
+@dataclass(frozen=True)
+class CoercionPlan:
+    kind: str
+    origin: Any = None
+    args: tuple[Any, ...] = ()
+    special_form_name: str | None = None
+    checker_kind: str | None = None
+
 #region: Coercer Class
 
 class Coercer:
@@ -17,11 +28,59 @@ class Coercer:
     Uses type analysis to determine possible coercions.
     """
     
-    def __init__(self, type_checker: TypeChecker):
+    def __init__(self, type_checker: TypeChecker, *, use_cache: bool = True):
         self.type_checker = type_checker
+        self.use_cache = use_cache
         self._active_coercions: set[tuple[int, int]] = set()
+        self._coercion_plan_cache: dict[Any, CoercionPlan] = {}
         self._coercion_strategies = self._build_coercion_strategies()
         self._canonical_containers = self._build_canonical_containers()
+        self._checker_kind_to_coercer = {
+            "sequence_like": self._coerce_sequence_like,
+            "mapping_like": self._coerce_mapping_like,
+            "set_like": self._coerce_set_like,
+            "tuple_like": self._coerce_tuple_like,
+            "type_type": self._coerce_type_type,
+            "iterable_like": self._coerce_iterable_like,
+            "collection_like": self._coerce_iterable_like,
+            "container_like": self._coerce_container_like,
+            "iterator_like": self._coerce_iterator_like,
+        }
+
+    def _maybe_get_cached(self, cache: dict[Any, Any], key: Any, factory: Callable[[], Any]) -> Any:
+        if not self.use_cache:
+            return factory()
+        try:
+            return cache[key]
+        except KeyError:
+            value = factory()
+            try:
+                cache[key] = value
+            except TypeError:
+                pass
+            return value
+        except TypeError:
+            return factory()
+
+    def _compile_coercion_plan(self, target_hint: Any) -> CoercionPlan:
+        return self._maybe_get_cached(
+            self._coercion_plan_cache,
+            target_hint,
+            lambda: self._build_coercion_plan(target_hint),
+        )
+
+    def _build_coercion_plan(self, target_hint: Any) -> CoercionPlan:
+        hint_plan = self.type_checker._compile_hint(target_hint)
+        checker_kind = hint_plan.checker_kind
+        if hint_plan.kind == "generic_alias" and checker_kind is None:
+            checker_kind = self.type_checker._get_abc_checker_kind(hint_plan.origin)
+        return CoercionPlan(
+            kind=hint_plan.kind,
+            origin=hint_plan.origin,
+            args=hint_plan.args,
+            special_form_name=hint_plan.special_form_name,
+            checker_kind=checker_kind,
+        )
     
     def coerce(self, value: Any, target_hint: Any) -> Any:
         """
@@ -59,17 +118,20 @@ class Coercer:
             return self.coerce(value, self.type_checker._unwrap_type_alias_hint(target_hint))
         elif self.type_checker._is_runtime_wrapper(target_hint):
             return self.coerce(value, self.type_checker._unwrap_runtime_wrapper(target_hint))
-        elif self.type_checker._is_protocol(target_hint):
+
+        plan = self._compile_coercion_plan(target_hint)
+
+        if plan.kind == "protocol":
             raise CoercionError(f"Cannot coerce {type(value)} to protocol {target_hint}")
-        elif self.type_checker._is_typeddict(target_hint):
+        elif plan.kind == "typeddict":
             return self._coerce_typeddict(value, target_hint)
-        elif self.type_checker._is_newtype(target_hint):
+        elif plan.kind == "newtype":
             return self._coerce_newtype(value, target_hint)
-        elif self.type_checker._is_special_form(target_hint):
-            return self._coerce_special_form(value, target_hint)
-        elif self.type_checker._is_generic_alias(target_hint):
-            return self._coerce_generic_alias(value, target_hint)
-        elif self.type_checker._is_basic_type(target_hint):
+        elif plan.kind == "special_form":
+            return self._coerce_special_form_compiled(value, target_hint, plan)
+        elif plan.kind == "generic_alias":
+            return self._coerce_generic_alias_compiled(value, target_hint, plan)
+        elif plan.kind == "basic_type":
             return self._coerce_basic_type(value, target_hint)
         elif isinstance(target_hint, TypeVar):
             return self._coerce_typevar(value, target_hint)
@@ -78,6 +140,13 @@ class Coercer:
             return self._fallback_coercion(value, target_hint)
             
     def _coerce_special_form(self, value: Any, target_hint: Any) -> Any:
+        return self._coerce_special_form_compiled(
+            value,
+            target_hint,
+            self._compile_coercion_plan(target_hint),
+        )
+
+    def _coerce_special_form_compiled(self, value: Any, target_hint: Any, plan: CoercionPlan) -> Any:
         """
         Coercion for Union, Optional, Literal, etc.
         Reuses TypeChecker analysis logic.
@@ -85,7 +154,7 @@ class Coercer:
         if hasattr(types, "UnionType") and isinstance(target_hint, types.UnionType):
             return self._coerce_union(value, target_hint)
 
-        form_name = self.type_checker._get_special_form_name(target_hint)
+        form_name = plan.special_form_name
         
         if form_name == 'Union':
             return self._coerce_union(value, target_hint)
@@ -184,43 +253,27 @@ class Coercer:
         raise CoercionError(f"Cannot coerce {value!r} to any literal value in {args}")
     
     def _coerce_generic_alias(self, value: Any, target_hint: Any) -> Any:
+        return self._coerce_generic_alias_compiled(
+            value,
+            target_hint,
+            self._compile_coercion_plan(target_hint),
+        )
+
+    def _coerce_generic_alias_compiled(self, value: Any, target_hint: Any, plan: CoercionPlan) -> Any:
         """
         List[int], Dict[str, float], etc.
         Reuses existing checker logic.
         """
-        origin = get_origin(target_hint)
-        args = get_args(target_hint)
-        
-        # Use TypeChecker analysis to identify the appropriate checker
-        checker = self.type_checker._get_checker(origin)
-        
-        if checker == self.type_checker._check_sequence_like:
-            return self._coerce_sequence_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_mapping_like:
-            return self._coerce_mapping_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_set_like:
-            return self._coerce_set_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_tuple_like:
-            return self._coerce_tuple_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_type_type:
-            return self._coerce_type_type(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_iterable_like:
-            return self._coerce_iterable_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_collection_like:
-            return self._coerce_iterable_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_container_like:
-            return self._coerce_container_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_iterator_like:
-            return self._coerce_iterator_like(value, target_hint, origin, args)
-        elif checker == self.type_checker._check_callable:
+        origin = plan.origin
+        args = plan.args
+
+        if plan.checker_kind in self._checker_kind_to_coercer:
+            coercer = self._checker_kind_to_coercer[plan.checker_kind]
+            return coercer(value, target_hint, origin, args)
+        elif plan.checker_kind == "callable":
             raise CoercionError(f"Cannot coerce {type(value)} to callable {target_hint}")
-        else:
-            # Use the ABC checker if available
-            abc_checker = self.type_checker._get_abc_checker(origin)
-            if abc_checker:
-                return self._coerce_with_abc_checker(value, target_hint, origin, args)
-            
-            raise CoercionError(f"No coercion strategy for {target_hint}")
+
+        raise CoercionError(f"No coercion strategy for {target_hint}")
 
     def _coerce_sequence_like(self, value: Any, target_hint: Any, origin: Any, args: Tuple) -> Any:
         """

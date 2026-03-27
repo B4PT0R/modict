@@ -89,8 +89,15 @@ def is_container(obj:Any, excluded:Optional[Tuple[Type,...]]=None)->bool:
     Returns:
         True if obj is a non-excluded container
     """
-    excluded= excluded if excluded is not None else (str,bytes,bytearray)
-    return (isinstance(obj,Mapping) or isinstance(obj,Sequence)) and not isinstance(obj,excluded)
+    excluded = excluded if excluded is not None else (str, bytes, bytearray)
+    obj_type = type(obj)
+
+    if obj_type in excluded:
+        return False
+    if obj_type is dict or obj_type is list or obj_type is tuple:
+        return True
+
+    return (isinstance(obj, Mapping) or isinstance(obj, Sequence)) and not isinstance(obj, excluded)
 
 def is_mutable_container(obj:Any)->bool:
     """Test if an object is a mutable container.
@@ -101,7 +108,10 @@ def is_mutable_container(obj:Any)->bool:
     Returns:
         True if obj is MutableMapping or MutableSequence
     """
-    return isinstance(obj,MutableMapping) or isinstance(obj,MutableSequence)
+    obj_type = type(obj)
+    if obj_type is dict or obj_type is list:
+        return True
+    return isinstance(obj, MutableMapping) or isinstance(obj, MutableSequence)
 
 
 def is_dict_like(obj: Any) -> bool:
@@ -132,4 +142,3 @@ def is_list_like(obj: Any) -> bool:
         True if obj implements MutableSequence
     """
     return isinstance(obj, MutableSequence)
-

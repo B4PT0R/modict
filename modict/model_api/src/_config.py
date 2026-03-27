@@ -21,13 +21,40 @@ class Config:
         return kwargs
 
     @classmethod
+    def _all_dataclass_fields(cls):
+        cached = getattr(cls, "__config_all_dataclass_fields__", None)
+        if cached is None:
+            cached = fields(cls)
+            setattr(cls, "__config_all_dataclass_fields__", cached)
+        return cached
+
+    @classmethod
+    def _init_dataclass_fields(cls):
+        cached = getattr(cls, "__config_init_dataclass_fields__", None)
+        if cached is None:
+            cached = tuple(
+                f for f in cls._all_dataclass_fields()
+                if f.init and f.name != "_explicit"
+            )
+            setattr(cls, "__config_init_dataclass_fields__", cached)
+        return cached
+
+    @classmethod
+    def _init_field_names(cls):
+        cached = getattr(cls, "__config_init_field_names__", None)
+        if cached is None:
+            cached = frozenset(f.name for f in cls._init_dataclass_fields())
+            setattr(cls, "__config_init_field_names__", cached)
+        return cached
+
+    @classmethod
     def _unknown_keys_error(cls, unknown: set[str]) -> TypeError:
         unknown_list = ", ".join(sorted(unknown))
         return TypeError(f"Unsupported config option(s): {unknown_list}.")
 
     @classmethod
     def _validate_known_kwargs(cls, kwargs: dict[str, Any]) -> None:
-        field_names = {f.name for f in fields(cls) if f.init and f.name != "_explicit"}
+        field_names = cls._init_field_names()
         if "check_values" in kwargs and "check_values" in field_names:
             cv = kwargs["check_values"]
             if not isinstance(cv, bool):
@@ -40,7 +67,7 @@ class Config:
     def __init__(self, **kwargs: Any):
         normalized = type(self)._normalize_kwargs(dict(kwargs))
 
-        allowed = {f.name for f in fields(type(self)) if f.init and f.name != "_explicit"}
+        allowed = type(self)._init_field_names()
         unknown = set(normalized).difference(allowed)
         if unknown:
             raise type(self)._unknown_keys_error(unknown)
@@ -49,9 +76,7 @@ class Config:
 
         object.__setattr__(self, "_explicit", frozenset(normalized.keys()))
 
-        for f in fields(type(self)):
-            if not f.init or f.name == "_explicit":
-                continue
+        for f in type(self)._init_dataclass_fields():
             if f.name in normalized:
                 value = normalized[f.name]
             else:
@@ -73,7 +98,7 @@ class Config:
         if name == "check_keys" and not isinstance(value, bool):
             raise TypeError("check_keys must be True or False")
 
-        field_names = {f.name for f in fields(type(self)) if f.init}
+        field_names = type(self)._init_field_names()
         if name in field_names:
             explicit = set(getattr(self, "_explicit", frozenset()))
             explicit.add(name)
@@ -84,26 +109,20 @@ class Config:
     @classmethod
     def _from_values(cls, values: dict[str, object], explicit: FrozenSet[str]):
         self = object.__new__(cls)
-        for f in fields(cls):
-            if f.name == "_explicit":
-                continue
+        for f in cls._init_dataclass_fields():
             object.__setattr__(self, f.name, values[f.name])
         object.__setattr__(self, "_explicit", explicit)
         return self
 
     def copy(self):
         values: dict[str, object] = {}
-        for f in fields(type(self)):
-            if not f.init or f.name == "_explicit":
-                continue
+        for f in type(self)._init_dataclass_fields():
             values[f.name] = copy.deepcopy(getattr(self, f.name))
         return type(self)._from_values(values, self._explicit)
 
     def merge(self, other):
         merged_values: dict[str, object] = {}
-        for f in fields(type(self)):
-            if not f.init or f.name == "_explicit":
-                continue
+        for f in type(self)._init_dataclass_fields():
             name = f.name
             if name in other._explicit:
                 merged_values[name] = copy.deepcopy(getattr(other, name))

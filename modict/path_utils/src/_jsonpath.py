@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 from jsonpath_ng import parse
@@ -22,6 +23,12 @@ def keys_from_jsonpath(path: JSONPath) -> tuple[PathKey, ...]:
     raise ValueError(f"Unsupported jsonpath_ng path node: {type(path).__name__}")
 
 
+@lru_cache(maxsize=512)
+def _keys_from_str_expr(expr: str) -> tuple[PathKey, ...]:
+    return keys_from_jsonpath(parse(expr))
+
+
 def keys_from_expr(expr: str | JSONPath) -> tuple[PathKey, ...]:
-    parsed = parse(expr) if isinstance(expr, str) else expr
-    return keys_from_jsonpath(parsed)
+    if isinstance(expr, str):
+        return _keys_from_str_expr(expr)
+    return keys_from_jsonpath(expr)

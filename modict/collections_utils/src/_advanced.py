@@ -376,7 +376,7 @@ def walk(
             seen_container_ids.add(container_id)
             for k, v in unroll(obj):
                 # Add key to path
-                new_path = path.child(k)
+                new_path = path._append(k, container=obj)
                 yield from _walk(v, new_path)
         else:
             if filter is None or filter(path, obj):
@@ -447,6 +447,13 @@ def is_seq_based(walked: Dict[Path, Any]) -> bool:
 
 
 def _container_kind_from_instance(container: Any) -> Optional[str]:
+    container_type = type(container)
+    if container_type is dict:
+        return "mapping"
+    if container_type is list or container_type is tuple:
+        return "sequence"
+    if container_type in (str, bytes, bytearray, int, float, bool, type(None)):
+        return None
     if isinstance(container, Mapping):
         return "mapping"
     if isinstance(container, Sequence) and not isinstance(container, (str, bytes, bytearray)):
@@ -494,6 +501,20 @@ def _infer_unwalk_node_kind(
 
     if inferred_kind is not None and kind_resolver is not None:
         inferred_kind = _validate_container_kind(kind_resolver(path, inferred_kind), path)
+
+    return inferred_kind
+
+
+def _infer_unwalk_node_kind_noresolver(node: _UnwalkNode) -> Optional[str]:
+    inferred_kind = node.hinted_kind
+
+    if inferred_kind is None and node.children:
+        if not node.has_non_int_key and node.int_keys == set(range(len(node.int_keys))):
+            return "sequence"
+        return "mapping"
+
+    if inferred_kind is None and node.has_value:
+        return _container_kind_from_instance(node.value)
 
     return inferred_kind
 
@@ -555,7 +576,7 @@ def _build_unwalk_tree(
         if inferred_kind is not None:
             node.hinted_kind = inferred_kind
         for key, child in node.children.items():
-            stack.append((child, path.child(key)))
+            stack.append((child, path._append(key)))
 
     return root
 
@@ -600,6 +621,34 @@ def unwalk(
         use_path_hints=not ignore_types,
         kind_resolver=kind_resolver,
     )
+
+    if kind_resolver is None:
+        stack: list[tuple[_UnwalkNode, bool]] = [(root, False)]
+
+        while stack:
+            node, ready = stack.pop()
+            if not ready:
+                stack.append((node, True))
+                for child in reversed(tuple(node.children.values())):
+                    stack.append((child, False))
+                continue
+
+            kind = _infer_unwalk_node_kind_noresolver(node)
+            if kind == "sequence":
+                built = [None] * len(node.children)
+                for key, child in node.children.items():
+                    built[key] = child.built
+            elif kind == "mapping":
+                built = {key: child.built for key, child in node.children.items()}
+            elif node.has_value:
+                built = node.value
+            else:
+                built = {}
+
+            node.built = built
+
+        return root.built
+
     stack: list[tuple[_UnwalkNode, Path, bool]] = [(root, Path(), False)]
 
     while stack:
@@ -607,7 +656,7 @@ def unwalk(
         if not ready:
             stack.append((node, path, True))
             for key, child in reversed(tuple(node.children.items())):
-                stack.append((child, path.child(key), False))
+                stack.append((child, path._append(key), False))
             continue
 
         kind = _infer_unwalk_node_kind(node, path)
@@ -679,7 +728,7 @@ def diff_nested(
         if isinstance(obj1, Mapping) and isinstance(obj2, Mapping):
             all_keys = set(keys(obj1)) | set(keys(obj2))
             for key in all_keys:
-                new_path = Path(tuple(path) + (key,))
+                new_path = path._append(key)
                 val1 = obj1.get(key, MISSING) if isinstance(obj1, dict) else (obj1[key] if has_key(obj1, key) else MISSING)
                 val2 = obj2.get(key, MISSING) if isinstance(obj2, dict) else (obj2[key] if has_key(obj2, key) else MISSING)
 
@@ -695,7 +744,7 @@ def diff_nested(
         elif isinstance(obj1, Sequence) and isinstance(obj2, Sequence):
             max_len = max(len(obj1), len(obj2))
             for idx in range(max_len):
-                new_path = Path(tuple(path) + (idx,))
+                new_path = path._append(idx)
                 val1 = obj1[idx] if idx < len(obj1) else MISSING
                 val2 = obj2[idx] if idx < len(obj2) else MISSING
 

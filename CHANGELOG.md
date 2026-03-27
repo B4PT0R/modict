@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.5
+
+### Added
+- A dedicated `benchmarks/` directory with sequential runners for `typechecker`, `modict core`, `path_utils`, and `collections_utils`
+
+### Changed
+- `typechecker` and `coercer` now cache compiled hint/coercion plans more aggressively, with additional fast paths for trivial scalar/runtime checks
+- `modict` hot paths (`__setitem__`, `update()`, computed invalidation, key/value pipeline guards) were tightened to avoid repeated no-op work and repeated structural scans
+- `path_utils` now caches parsed JSONPath strings, making repeated path-based operations dramatically cheaper
+- `collections_utils` traversal and reconstruction paths (`walk`, `unwalk`, `diff_nested`, `set_nested`) now rely on lighter internal path/container handling for better deep-op throughput
+
+### Fixed
+- Runtime container helper fast paths now still respect explicit `excluded=...` overrides
+
+### Tests
+- Added regression coverage around performance-sensitive copy/translate/computed bookkeeping paths and the newer `typechecker` fast paths
+
 ## 0.4.4
 
 ### Added

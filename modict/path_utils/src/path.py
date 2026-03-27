@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence
+from typing import Any, Iterable, Iterator
 
 PathKey = int | str
 
@@ -418,12 +419,16 @@ class Path:
             parent_node = node
         return Path._from_nodes(nodes, root=root)
 
-    def child(self, key: PathKey) -> Path:
+    def _append(self, key: PathKey, *, container: Any = MISSING) -> Path:
         parent_node = self.nodes[-1] if self.nodes else None
+        node = PathNode(key=key, container=container, parent_node=parent_node)
+        return Path._from_nodes(self.nodes + (node,), root=self.root)
+
+    def child(self, key: PathKey) -> Path:
         if self.root is MISSING:
-            return Path._from_nodes(self.nodes + (PathNode(key=key, container=MISSING, parent_node=parent_node),), root=MISSING)
+            return self._append(key)
         current_value = self.resolve()
-        return Path._from_nodes(self.nodes + (PathNode(key=key, container=current_value, parent_node=parent_node),), root=self.root)
+        return self._append(key, container=current_value)
 
     def __add__(self, other: Any) -> Path:
         if isinstance(other, Path):

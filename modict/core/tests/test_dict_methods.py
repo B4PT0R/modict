@@ -411,6 +411,24 @@ class TestCopy:
         assert dict.__getitem__(c, "doubled") is not dict.__getitem__(m, "doubled")
         assert c["doubled"] == 4
 
+    def test_copy_keeps_computed_protection_state_consistent_after_deletion(self):
+        class Calc(modict):
+            a: int
+
+            @modict.computed(cache=True, deps=["a"])
+            def doubled(self):
+                return self.a * 2
+
+        m = Calc(a=2)
+        c = m.copy()
+
+        c._config.override_computed = True
+        del c["doubled"]
+        c._config.override_computed = False
+
+        c.clear()
+        assert c == {}
+
     def test_copy_module_preserves_computed_placeholders(self):
         class Calc(modict):
             a: int
