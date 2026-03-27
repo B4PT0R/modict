@@ -374,6 +374,15 @@ class TypeChecker:
 
     def _protocol_member_names(self, protocol: type) -> set[str]:
         """Return the protocol members explicitly declared by a protocol type."""
+        protocol_attr_getter = getattr(typing, "_get_protocol_attrs", None)
+        if protocol_attr_getter is None and _typing_extensions is not None:
+            protocol_attr_getter = getattr(_typing_extensions, "_get_protocol_attrs", None)
+        if protocol_attr_getter is not None:
+            try:
+                return set(protocol_attr_getter(protocol))
+            except Exception:
+                pass
+
         names = getattr(protocol, "__protocol_attrs__", None)
         if names is not None:
             return set(names)
