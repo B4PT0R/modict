@@ -113,7 +113,7 @@ def test_find_on_typed_modict():
         bob=User(name="Bob", age=17),
     )
     results = list(users.find(
-        path_constraint=lambda p: p.keys[-1] == "age",
+        path_constraint=lambda p: tuple(p)[-1] == "age",
         value_constraint=lambda v: v < 18,
     ))
     assert len(results) == 1
@@ -126,4 +126,4 @@ def test_find_path_objects_resolve_correctly():
     assert len(results) == 1
     path, value = results[0]
     assert path.resolve() == 99
-    assert path.keys == ("a", "b", "c")
+    assert tuple(path) == ("a", "b", "c")

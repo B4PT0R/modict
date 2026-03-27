@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.2
+
+### Removed
+- `rename()` from the public API; in-place key renaming was a poor fit for typed/model-like modicts and could break expected key structure
+
+### Added
+- `translate()` to return a plain `modict` with translated keys, intended for payload/header/schema projection without mutating the source object
+- Path ergonomics improvements: `tuple(path)` iteration on keys, readable `repr(path)`, non-mutating `with_root()`, and relationship helpers `starts_with()`, `is_ancestor_of()`, `relative_to()`
+- `unwalk(..., kind_resolver=...)` and `modict.unwalk(..., kind_resolver=...)` to refine inferred `mapping` / `sequence` structure per container path
+
+### Changed
+- `set_nested()` is now strict by default: missing intermediate containers raise unless `create_missing=True` is passed explicitly
+- `set_nested(..., create_missing=True)` now uses a `container_factory(path)` hook instead of implicit container invention
+- `unwalk()` now reconstructs structural `dict` / `list` containers via an internal tree build/materialization pass instead of replaying every path through repeated nested writes
+- `modict.unwalk()` continues to recast the root mapping through the target class so model validation/coercion can re-establish the desired root type safely
+- `Path` no longer exposes a `.keys` property; the public sequence API is now `tuple(path)` / iteration on keys
+- `ignore_types` on `unwalk()` is now a legacy compatibility mode; structure selection is driven by the default or custom `kind_resolver`
+- `repr(modict)` now renders computed fields as `Computed(current_value)` instead of hiding their derived nature in console output
+
 ## 0.4.1
 
 ### Added

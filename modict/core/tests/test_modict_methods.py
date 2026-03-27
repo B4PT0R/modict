@@ -1,6 +1,7 @@
 """Tests for modict-specific methods: nested ops, attribute access,
 deepcopy, rename/exclude/extract, JSON helpers, walk/walked/unwalk.
 """
+import copy
 import json
 import pytest
 from modict import modict, MISSING
@@ -30,6 +31,14 @@ class TestAttributeAccess:
         m = modict()
         m.a = 42
         assert m["a"] == 42
+
+    def test_setattr_cannot_shadow_method_name(self):
+        m = modict()
+        with pytest.raises(AttributeError, match="Use item assignment instead"):
+            m.copy = 42
+        m["copy"] = 42
+        assert m["copy"] == 42
+        assert callable(m.copy)
 
     def test_delattr_removes_key(self):
         m = modict(a=1, b=2)
@@ -93,8 +102,17 @@ class TestNestedOps:
         self.m.set_nested("$.config.debug", False)
         assert self.m.get_nested("$.config.debug") is False
 
-    def test_set_nested_creates_intermediate(self):
-        self.m.set_nested("$.meta.version", "1.0")
+    def test_set_nested_missing_intermediate_raises_by_default(self):
+        with pytest.raises(KeyError, match="Missing intermediate container"):
+            self.m.set_nested("$.meta.version", "1.0")
+
+    def test_set_nested_creates_intermediate_with_factory(self):
+        self.m.set_nested(
+            "$.meta.version",
+            "1.0",
+            create_missing=True,
+            container_factory=lambda path: {},
+        )
         assert self.m.get_nested("$.meta.version") == "1.0"
 
     def test_has_nested_true(self):
@@ -122,34 +140,43 @@ class TestNestedOps:
 
 
 # ---------------------------------------------------------------------------
-# rename / exclude / extract
+# translate / exclude / extract
 # ---------------------------------------------------------------------------
 
-class TestRenameExcludeExtract:
-    def test_rename_kwargs(self):
+class TestTranslateExcludeExtract:
+    def test_translate_kwargs(self):
         m = modict(a=1, b=2, c=3)
-        m.rename(a="x", b="y")
-        assert "x" in m and "y" in m
-        assert "a" not in m and "b" not in m
-        assert m["x"] == 1 and m["y"] == 2
+        translated = m.translate(a="x", b="y")
+        assert translated == {"x": 1, "y": 2, "c": 3}
+        assert m == {"a": 1, "b": 2, "c": 3}
 
-    def test_rename_dict_arg(self):
+    def test_translate_dict_arg(self):
         m = modict(a=1, b=2)
-        m.rename({"a": "alpha"})
-        assert "alpha" in m and "a" not in m
+        translated = m.translate({"a": "alpha"})
+        assert translated == {"alpha": 1, "b": 2}
+        assert m == {"a": 1, "b": 2}
 
-    def test_rename_preserves_order(self):
+    def test_translate_preserves_order(self):
         m = modict(a=1, b=2, c=3)
-        m.rename(b="B")
-        assert list(m.keys()) == ["a", "B", "c"]
+        translated = m.translate(b="B")
+        assert list(translated.keys()) == ["a", "B", "c"]
 
-    def test_rename_preserves_raw_values(self):
-        """rename() must not evaluate computed fields."""
+    def test_translate_preserves_raw_values(self):
+        """translate() must not evaluate computed fields."""
         m = modict(a=1)
         m["double"] = Computed(lambda m: m.a * 2)
-        m.rename(double="twice")
+        translated = m.translate(double="twice")
         # 'twice' should still be the Computed object, not the evaluated result
-        assert isinstance(dict.__getitem__(m, "twice"), Computed)
+        assert isinstance(dict.__getitem__(translated, "twice"), Computed)
+        assert "double" in m
+        assert "twice" not in m
+
+    def test_translate_returns_plain_modict_for_typed_model(self):
+        typed = Typed(x=1, y=2)
+        translated = typed.translate(x="X")
+
+        assert type(translated) is modict
+        assert translated == {"X": 1, "y": 2}
 
     def test_exclude_returns_plain_modict(self):
         m = modict(a=1, b=2, c=3)
@@ -207,6 +234,42 @@ class TestDeepcopy:
         c = m.deepcopy()
         c["b"].append(4)
         assert len(m["b"]) == 3
+
+    def test_deepcopy_preserves_computed_placeholders(self):
+        class Calc(modict):
+            a: int
+
+            @modict.computed(cache=True, deps=["a"])
+            def doubled(self):
+                return self.a * 2
+
+        m = Calc(a=2)
+        c = m.deepcopy()
+
+        assert type(c) is Calc
+        assert isinstance(dict.__getitem__(c, "doubled"), Computed)
+        assert dict.__getitem__(c, "doubled") is not dict.__getitem__(m, "doubled")
+        assert c["doubled"] == 4
+
+    def test_copy_deepcopy_preserves_self_reference(self):
+        m = modict()
+        m["self"] = m
+
+        c = copy.deepcopy(m)
+
+        assert c is not m
+        assert c["self"] is c
+
+    def test_deepcopy_preserves_instance_config(self):
+        m = modict(a=1)
+        m._config.strict = True
+        m._config.auto_convert = False
+
+        c = m.deepcopy()
+
+        assert c._config is not m._config
+        assert c._config.strict is True
+        assert c._config.auto_convert is False
 
 
 # ---------------------------------------------------------------------------

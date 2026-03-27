@@ -80,16 +80,16 @@ def test_exact_path_object_match():
 # ---------------------------------------------------------------------------
 
 def test_path_predicate_last_key():
-    results = Query(lambda p: p.keys[-1] == "email").find(DATA)
+    results = Query(lambda p: tuple(p)[-1] == "email").find(DATA)
     assert len(results) == 3
     assert all("@" in v for _, v in results)
 
 
 def test_path_predicate_depth():
     # depth 3: ("users", i, field)
-    results = Query(lambda p: len(p.keys) == 3).find(DATA)
+    results = Query(lambda p: len(p) == 3).find(DATA)
     assert len(results) > 0
-    assert all(len(p.keys) == 3 for p, _ in results)
+    assert all(len(p) == 3 for p, _ in results)
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ def test_deeply_nested():
     data = {"a": {"b": {"c": {"d": 42}}}}
     results = Query(value=42).find(data)
     assert len(results) == 1
-    assert results[0][0].keys == ("a", "b", "c", "d")
+    assert tuple(results[0][0]) == ("a", "b", "c", "d")
 
 
 def test_repr():

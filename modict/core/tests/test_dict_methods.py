@@ -6,6 +6,7 @@ Covers every method in the dict interface, verifying:
 - Subclass identity is preserved (copy, fromkeys, |)
 - Views (keys/values/items) reflect current state and read through __getitem__
 """
+import copy
 import pytest
 from modict import modict, MISSING
 from modict.model_api import Computed
@@ -140,6 +141,14 @@ class TestRepr:
         m = modict(a=1, b=2)
         r = repr(m)
         assert "'a'" in r and "'b'" in r
+
+    def test_repr_marks_computed_with_current_value(self):
+        m = modict(a=2)
+        m["double"] = Computed(lambda m: m.a * 2)
+
+        r = repr(m)
+
+        assert "'double': Computed(4)" in r
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +337,18 @@ class TestSetdefault:
         assert v is None
         assert m["x"] is None
 
+    def test_setdefault_returns_stored_coerced_value(self):
+        class PartialTyped(modict):
+            x: int
+            z: int
+            _config = modict.config(validate_assignment=True)
+
+        m = PartialTyped(x=1)
+        v = m.setdefault("z", "5")
+        assert v == 5
+        assert type(v) is int
+        assert m["z"] == 5
+
 
 # ---------------------------------------------------------------------------
 # clear
@@ -373,6 +394,48 @@ class TestCopy:
         c = m.copy()
         assert c == m
         assert type(c) is modict
+
+    def test_copy_preserves_computed_placeholders(self):
+        class Calc(modict):
+            a: int
+
+            @modict.computed(cache=True, deps=["a"])
+            def doubled(self):
+                return self.a * 2
+
+        m = Calc(a=2)
+        c = m.copy()
+
+        assert type(c) is Calc
+        assert isinstance(dict.__getitem__(c, "doubled"), Computed)
+        assert dict.__getitem__(c, "doubled") is not dict.__getitem__(m, "doubled")
+        assert c["doubled"] == 4
+
+    def test_copy_module_preserves_computed_placeholders(self):
+        class Calc(modict):
+            a: int
+
+            @modict.computed(cache=True, deps=["a"])
+            def doubled(self):
+                return self.a * 2
+
+        m = Calc(a=2)
+        c = copy.copy(m)
+
+        assert type(c) is Calc
+        assert isinstance(dict.__getitem__(c, "doubled"), Computed)
+        assert c["doubled"] == 4
+
+    def test_copy_preserves_instance_config(self):
+        m = modict(a=1)
+        m._config.strict = True
+        m._config.auto_convert = False
+
+        c = m.copy()
+
+        assert c._config is not m._config
+        assert c._config.strict is True
+        assert c._config.auto_convert is False
 
 
 # ---------------------------------------------------------------------------

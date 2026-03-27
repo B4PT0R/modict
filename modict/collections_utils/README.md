@@ -61,11 +61,21 @@ from modict.collections_utils import (
 
 # All accept JSONPath strings, tuples, or Path objects
 value = get_nested(data, 'users[0].name', default=None)
-set_nested(data, 'users[0].email', 'alice@example.com')  # creates intermediate containers as needed
+set_nested(data, 'users[0].email', 'alice@example.com')  # existing intermediate containers
+set_nested(
+    data,
+    'users[0].profile.city',
+    'Paris',
+    create_missing=True,
+    container_factory=lambda path: {},
+)
 has_nested(data, 'users[0].name')   # True/False
 val = pop_nested(data, 'users[0].name')   # removes and returns
 del_nested(data, 'users[0].name')         # removes (delegates to pop_nested)
 ```
+
+`set_nested()` is strict by default: if an intermediate container is missing, it raises.
+Use `create_missing=True` to allow reconstruction, and provide `container_factory(path)` when the default `Path`-based factory is not enough.
 
 #### Traversal
 
@@ -86,9 +96,17 @@ for path, value in walk(data, callback=str, filter=lambda p, v: v is not None):
 # walked returns a dict instead of an iterator
 snapshot = walked(data)
 
-# unwalk reconstructs from a {Path: value} dict
+# unwalk reconstructs from a {Path: value} dict using structural dict/list containers
 restored = unwalk(snapshot)
-# ignore_types=True forces plain dict/list instead of preserving original container types
+
+# refine inferred structure for specific subtrees when needed
+restored = unwalk(
+    snapshot,
+    kind_resolver=lambda path, kind: "mapping" if tuple(path) == ("headers",) else kind,
+)
+
+# ignore_types=True remains available as a legacy mode that disables
+# Path-based Mapping/Sequence hints and falls back to local key heuristics only
 restored = unwalk(snapshot, ignore_types=True)
 ```
 
@@ -181,7 +199,7 @@ from modict import Query, MISSING
 Query("$.users[*].age", lambda v: v > 30).find(data)
 
 # Any leaf whose last key is "email"
-Query(lambda p: p.keys[-1] == "email").find(data)
+Query(lambda p: tuple(p)[-1] == "email").find(data)
 
 # Exact path, exact value
 Query(("users", 0, "name"), "Alice").find(data)

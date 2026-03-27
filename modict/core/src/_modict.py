@@ -50,7 +50,7 @@ class modict(dict, metaclass=modictMeta):
         - Type annotations and defaults via class fields
         - Robust runtime type-checking and coercion (optional)
         - Computed values with caching and dependency-bound invalidation
-        - Rename method to rename keys without changing values
+        - Key translation via translate() without mutating the source object
         - JSONPath support (RFC 9535) for unambiguous nested access
         - Path-based access for nested structures (get_nested, set_nested, etc.)
         - Deep walking, merging, diffing, and comparing with other nested structures
@@ -269,7 +269,7 @@ class modict(dict, metaclass=modictMeta):
 
     def __init__(self, *args, **kwargs):
 
-        self._config = type(self)._config.copy()
+        object.__setattr__(self, "_config", type(self)._config.copy())
 
         if (
             self._config.from_attributes
@@ -288,18 +288,13 @@ class modict(dict, metaclass=modictMeta):
 
         # Inject defaults and computed
         for key, field in self.__fields__.items():
-            value=field.get_default()
+            value = field.get_default()
             if value is not MISSING:
                 if isinstance(value, Computed):
-                    if key in self:
-                        if not getattr(self._config, "override_computed", False):
-                            raise TypeError(
-                                f"Cannot override computed field '{key}' at initialization "
-                                f"(override_computed=False)"
-                            )
-                        # override_computed=True: keep user-provided value
-                    else:
-                        dict.__setitem__(self, key, value)
+                    # During model instantiation/casting, target-class Computed fields
+                    # always win over incoming data so the resulting instance respects
+                    # the target model contract.
+                    dict.__setitem__(self, key, value)
                 else:
                     if key not in self:
                         dict.__setitem__(self, key, value)
@@ -751,8 +746,15 @@ class modict(dict, metaclass=modictMeta):
         self._invalidate_dependants({key})
 
     def __repr__(self):
-        content=', '.join(f"{k!r}: {v!r}" for k,v in self.items())
-        template=f"{{{content}}}"
+        parts = []
+        for key, raw in dict.items(self):
+            value = self[key]
+            if isinstance(raw, Computed):
+                rendered = f"Computed({value!r})"
+            else:
+                rendered = repr(value)
+            parts.append(f"{key!r}: {rendered}")
+        template = f"{{{', '.join(parts)}}}"
         return f"{self.__class__.__name__}({template})"
     
     def __str__(self):
@@ -824,13 +826,28 @@ class modict(dict, metaclass=modictMeta):
         for key, value in kwargs.items():
             self[key] = value
 
+    @classmethod
+    def _new_empty_like(cls, *, config=None):
+        """Allocate an instance without running __init__."""
+        new = dict.__new__(cls)
+        source_config = config if config is not None else type(new)._config
+        object.__setattr__(new, "_config", source_config.copy())
+        return new
+
     def copy(self):
         """Create a shallow copy with validation.
 
         Returns:
             modict: A new modict with the same items
         """
-        return type(self)(self)
+        new = type(self)._new_empty_like(config=self._config)
+        for key, value in dict.items(self):
+            cloned = value.copy() if isinstance(value, Computed) else value
+            dict.__setitem__(new, key, cloned)
+        return new
+
+    def __copy__(self):
+        return self.copy()
 
     @classmethod
     def fromkeys(cls, iterable, value=None):
@@ -902,7 +919,7 @@ class modict(dict, metaclass=modictMeta):
             return self[key]
         else:
             self[key] = default
-            return default
+            return self[key]
 
     def clear(self):
         if (
@@ -938,15 +955,19 @@ class modict(dict, metaclass=modictMeta):
     def __setattr__(self, key, value):
         """Allow attribute-style setting of dictionary keys.
 
-        Intelligent routing: existing class attribute → Python protocol,
-        new key → dictionary behavior.
+        New keys are routed to dictionary storage. Existing class attributes are
+        protected from instance-level shadowing; use item assignment explicitly
+        if you want a key with the same name.
 
         Args:
             key: The attribute/key name
             value: The value to set
         """
         if hasattr(type(self), key):
-            object.__setattr__(self, key, value)
+            raise AttributeError(
+                f"Cannot assign attribute '{key}': '{type(self).__name__}.{key}' already exists. "
+                f"Use item assignment instead: obj[{key!r}] = value"
+            )
         else:
             # New key → dict behavior
             self[key] = value
@@ -1126,11 +1147,19 @@ class modict(dict, metaclass=modictMeta):
         """
         return get_nested(self,path,default=default)
 
-    def set_nested(self, path: str | tuple | Path, value):
-        """Set a nested value, creating intermediate containers as needed.
+    def set_nested(
+        self,
+        path: str | tuple | Path,
+        value,
+        *,
+        create_missing: bool = False,
+        container_factory=None,
+    ):
+        """Set a nested value.
 
-        Creates missing containers (modict for string keys, list for integer keys)
-        along the path if they don't exist.
+        By default, all intermediate containers along the path must already
+        exist. If `create_missing=True`, missing intermediate containers are
+        created using `container_factory(path)`.
 
         Supports multiple path formats:
         - JSONPath string (RFC 9535): "$.a[0].b"
@@ -1140,17 +1169,26 @@ class modict(dict, metaclass=modictMeta):
         Args:
             path: JSONPath string, tuple of keys, or Path object
             value: Value to set
+            create_missing: Whether to create missing intermediate containers
+            container_factory: Factory called as `factory(path)` for each
+                missing intermediate container when `create_missing=True`
 
         Raises:
             TypeError: If any container in the path is immutable
 
         Examples:
-            >>> m = modict()
-            >>> m.set_nested("$.a.b[0].c", 42)  # JSONPath
+            >>> m = modict({"a": {"b": [{"c": 0}]}})
+            >>> m.set_nested("$.a.b[0].c", 42)
             >>> m
             modict({'a': {'b': [{'c': 42}]}})
         """
-        set_nested(self,path,value)
+        set_nested(
+            self,
+            path,
+            value,
+            create_missing=create_missing,
+            container_factory=container_factory,
+        )
             
     def del_nested(self, path: str | tuple | Path):
         """Delete a nested key/index.
@@ -1231,8 +1269,8 @@ class modict(dict, metaclass=modictMeta):
         """
         return has_nested(self,path)
 
-    def rename(self, *args, **kwargs):
-        """Rename keys without altering values (order is preserved).
+    def translate(self, *args, **kwargs):
+        """Return a plain modict with translated keys (order is preserved).
 
         Uses an internal mapping created by dict(*args, **kwargs) where
         the keys represent the old keys and the values represent the new keys.
@@ -1242,48 +1280,30 @@ class modict(dict, metaclass=modictMeta):
             *args: Positional arguments passed to dict() to create the mapping
             **kwargs: Keyword arguments passed to dict() to create the mapping
 
+        Returns:
+            A new base `modict` instance containing the translated keys.
+
         Note:
-            If two different keys are renamed to the same new key,
+            If two different keys are translated to the same new key,
             the last one encountered will overwrite the previous one.
+            Raw stored values are preserved: Computed placeholders are copied,
+            not evaluated.
 
         Examples:
             >>> m = modict(a=1, b=2, c=3)
-            >>> m.rename(a='x', b='y')
-            >>> m
+            >>> translated = m.translate(a='x', b='y')
+            >>> translated
             modict({'x': 1, 'y': 2, 'c': 3})
-            >>> m.rename({'x': 'alpha', 'y': 'beta'})
-            >>> m
+            >>> translated = translated.translate({'x': 'alpha', 'y': 'beta'})
+            >>> translated
             modict({'alpha': 1, 'beta': 2, 'c': 3})
         """
         mapping = dict(*args, **kwargs)
-        declared_fields = set(getattr(self, "__fields__", {}) or {})
-
-        # In require_all mode, allow renaming dynamic keys only (not declared fields),
-        # and forbid renaming into declared field names (would overwrite invariants).
-        if self._check_keys_enabled() and bool(getattr(self._config, "require_all", False)) and declared_fields:
-            for old_key, new_key in mapping.items():
-                if old_key in declared_fields:
-                    raise TypeError(f"Cannot rename declared field '{old_key}' (require_all=True)")
-                if new_key in declared_fields:
-                    raise TypeError(
-                        f"Cannot rename '{old_key}' to declared field '{new_key}' (require_all=True)"
-                    )
-
-        # Preserve order and preserve raw stored values (do not go through __getitem__),
-        # otherwise computed fields would be evaluated and replaced by their values.
-        new_items: list[tuple[Any, Any]] = []
+        translated = modict._new_empty_like()
         for key, value in dict.items(self):
-            new_items.append((mapping.get(key, key), value))
-
-        # Rebuild in place while keeping reference stable.
-        # Use dict.clear to bypass modict.clear guards; we re-check invariants afterwards.
-        dict.clear(self)
-        for k, v in new_items:
-            dict.__setitem__(self, k, v)
-
-        # Renaming keys can change computed dependency meaning; invalidate caches.
-        self._invalidate_all()
-        self._check_required_fields()
+            raw = value.copy() if isinstance(value, Computed) else value
+            dict.__setitem__(translated, mapping.get(key, key), raw)
+        return translated
         
     def exclude(self, *excluded_keys):
         """Exclude specified keys from the modict, preserving the original order.
@@ -1434,27 +1454,34 @@ class modict(dict, metaclass=modictMeta):
         return modict(self.walk(callback=callback,filter=filter))
 
     @classmethod
-    def unwalk(cls, walked, ignore_types: bool = False):
+    def unwalk(cls, walked, ignore_types: bool = False, *, kind_resolver=None):
         """Reconstruct a nested structure from a flattened dict.
 
         Args:
             walked: A path:value flattened dictionary (e.g., {'a.0.b': 1, 'a.1.c': 2})
-            ignore_types: If True, ignore container_class metadata and use only dict/list
-                         (useful to avoid reconstructing modict instances with defaults)
+            ignore_types: Legacy compatibility flag. If True, ignore Path-provided
+                Mapping/Sequence hints and rely only on key-shape heuristics during
+                structural reconstruction.
+            kind_resolver: Optional hook called as ``kind_resolver(path, inferred_kind)``
+                for every reconstructed container path. It may refine the inferred
+                structure by returning either ``"mapping"`` or ``"sequence"``.
 
         Returns:
-            Reconstructed nested structure (modict or preserved container type)
+            Reconstructed nested structure. The structural rebuild uses plain
+            dict/list containers; if the root is a mapping, it is then recast
+            through `cls(...)` so the target model can re-apply validation and
+            coercion.
 
         Examples:
             >>> walked_data = modict({'a.0': 1, 'a.1.b': 2, 'c': 3})
             >>> modict.unwalk(walked_data)
             modict({'a': [1, {'b': 2}], 'c': 3})
 
-            >>> # With ignore_types=True, avoids modict reconstruction
+            >>> # With ignore_types=True, ignore Path hints during structural rebuild
             >>> modict.unwalk(walked_data, ignore_types=True)
-            modict({'a': [1, {'b': 2}], 'c': 3})  # Plain dict inside, not nested modicts
+            modict({'a': [1, {'b': 2}], 'c': 3})
         """
-        unwalked = unwalk(walked, ignore_types=ignore_types)
+        unwalked = unwalk(walked, ignore_types=ignore_types, kind_resolver=kind_resolver)
 
         # Only convert to cls if:
         # 1. It's a Mapping AND
@@ -1601,7 +1628,18 @@ class modict(dict, metaclass=modictMeta):
             >>> m2.a.b
             [1, 2, 3, 4]
         """
-        return type(self)(copy.deepcopy(dict(self)))
+        return copy.deepcopy(self)
+
+    def __deepcopy__(self, memo):
+        existing = memo.get(id(self))
+        if existing is not None:
+            return existing
+        new = type(self)._new_empty_like(config=self._config)
+        memo[id(self)] = new
+        for key, value in dict.items(self):
+            cloned = value.copy() if isinstance(value, Computed) else copy.deepcopy(value, memo)
+            dict.__setitem__(new, key, cloned)
+        return new
     
     # JSON support
     

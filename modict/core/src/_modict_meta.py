@@ -36,8 +36,10 @@ class modictConfig(BaseConfig):
        # modict-specific fields
        auto_convert: If True, automatically convert dicts found in nested mutable containers
                      (MutableMapping or MutableSequence) to modicts (on first access).
-       override_computed: If True, allow overriding/deleting computed fields at runtime
-                         and allow providing initial values for computed fields.
+       override_computed: If True, allow overriding/deleting computed fields at runtime.
+                         During model instantiation/casting, class-declared computed
+                         fields still override incoming values to preserve the target
+                         model contract.
        require_all: If True, require presence of all declared (non-computed) class fields
                     at initialization time (annotation-only fields become required).
        check_keys: Controls whether modict enforces key-level structural constraints:

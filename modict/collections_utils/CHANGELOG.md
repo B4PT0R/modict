@@ -2,6 +2,18 @@
 
 All notable changes to collections_utils will be documented in this file.
 
+## [0.1.1] - 2026-03-27
+
+### Added
+- `set_nested(..., create_missing=True, container_factory=...)` for explicit intermediate-container creation
+- `unwalk(..., kind_resolver=...)` to refine inferred `mapping` / `sequence` structure per container path
+
+### Changed
+- `set_nested()` is now strict by default and no longer invents missing intermediate containers implicitly
+- `unwalk()` now reconstructs structural `dict` / `list` containers instead of instantiating arbitrary source container classes
+- `unwalk()` now builds and materializes an internal reconstruction tree instead of replaying every path through repeated nested writes
+- `ignore_types` on `unwalk()` remains available as a legacy compatibility mode
+
 ## [0.1.0] - 2024-01-05
 
 ### Added

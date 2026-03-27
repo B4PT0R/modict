@@ -1,13 +1,13 @@
 # path_utils
 
-Immutable, hashable path objects for navigating nested data (dicts, lists, or objects), built on `jsonpath_ng`.
+Hashable path objects for navigating nested data (dicts, lists, or objects), built on `jsonpath_ng`.
 
 Used internally by modict. The user-facing entry point is `from modict import Path`.
 
 ## Concepts
 
 - `PathNode`: a single step — a key (`int` or `str`) plus an optional reference to the container at that level.
-- `Path`: an immutable sequence of `PathNode` instances with helpers for resolution, manipulation, and JSONPath conversion.
+- `Path`: a stable, hashable sequence of keys with `PathNode` metadata for resolution, manipulation, and JSONPath conversion.
 
 ## Construction
 
@@ -41,6 +41,11 @@ assert p.resolve(data) == "Ada"
 # Or bind root first, then resolve without argument
 p.set_root(data)
 assert p.resolve() == "Ada"
+
+# Or create a rebound copy without mutating the original path
+other = {"users": [{"name": "Grace"}]}
+q = p.with_root(other)
+assert q.resolve() == "Grace"
 ```
 
 Note: `resolve(data)` caches container references in each node, enabling subsequent `resolve()` calls without re-passing the root. If you later try to resolve the same cached `Path` from a different root, a `ResolutionError` is raised. Use `invalidate()` or `set_root()` to reset.
@@ -92,8 +97,11 @@ p.delete_inplace()
 
 ```python
 p = Path("$.users[0].name")
-p.keys          # ("users", 0, "name") — tuple of raw keys
+tuple(p)        # ("users", 0, "name") — same, via iteration on keys
 str(p)          # "$.users[0].name" — JSONPath string
+repr(p)         # "Path($.users[0].name)"
+p.starts_with(("users", 0))          # True
+p.relative_to(("users",))            # Path($[0].name)
 p.parent()      # Path(("users", 0))
 p.parent(2)     # Path(("users",))
 ```
@@ -125,11 +133,12 @@ from modict.path_utils import find_paths
 data = {"users": [{"name": "Ada"}, {"name": "Grace"}]}
 paths = find_paths(data, "$.users[*].name")
 
-assert [p.keys for p in paths] == [("users", 0, "name"), ("users", 1, "name")]
+assert [tuple(p) for p in paths] == [("users", 0, "name"), ("users", 1, "name")]
 assert [p.resolve() for p in paths] == ["Ada", "Grace"]
 ```
 
 ## Notes
 
 - `Path` and `PathNode` are hashable; container references do not affect equality or hash (only the key sequence matters).
-- `PathKey` is a legacy alias for `PathNode`.
+- `PathKey` is the key type used by paths: `int | str`.
+- `Path(p)` clones an existing `Path`, preserving its cached container references unless a new `root=` is provided.

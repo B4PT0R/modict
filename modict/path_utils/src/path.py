@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+from typing import Any, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, Sequence
 
 PathKey = int | str
 
@@ -165,8 +165,10 @@ class Path:
     def __init__(self, path: Any = (), root: Any = MISSING) -> None:
         if isinstance(path, Path):
             if root is MISSING:
-                root = path.root
-            keys: tuple[PathKey, ...] = path.keys
+                self.nodes = self._clone_nodes(path.nodes)
+                self.root = path.root
+                return
+            keys: tuple[PathKey, ...] = tuple(path)
         elif isinstance(path, str):
             from ._jsonpath import keys_from_expr
 
@@ -210,11 +212,30 @@ class Path:
         obj.root = root
         return obj
 
+    @staticmethod
+    def _clone_nodes(nodes: Iterable[PathNode]) -> tuple[PathNode, ...]:
+        cloned: list[PathNode] = []
+        parent_node: PathNode | None = None
+        for node in nodes:
+            copied = PathNode(key=node.key, container=node.container, parent_node=parent_node)
+            cloned.append(copied)
+            parent_node = copied
+        return tuple(cloned)
+
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Path) and self.keys == other.keys
+        return isinstance(other, Path) and tuple(self) == tuple(other)
 
     def __hash__(self) -> int:
-        return hash(self.keys)
+        return hash(tuple(self))
+
+    def __iter__(self) -> Iterator[PathKey]:
+        return (node.key for node in self.nodes)
+
+    def __len__(self) -> int:
+        return len(self.nodes)
+
+    def __repr__(self) -> str:
+        return f"Path({self})"
 
     @classmethod
     def walk(cls, root: Any, *, walk_objects: bool = False) -> Iterable[tuple[Path, Any]]:
@@ -299,10 +320,6 @@ class Path:
 
         return _recurse(root, start)
 
-    @property
-    def keys(self) -> tuple[PathKey, ...]:
-        return tuple(node.key for node in self.nodes)
-
     def resolve(self, root: Any = MISSING) -> Any:
         if not self.nodes:
             if root is not MISSING:
@@ -346,6 +363,27 @@ class Path:
             self.nodes[0].container = root
         return self
 
+    def with_root(self, root: Any) -> Path:
+        return Path(self, root=root)
+
+    def starts_with(self, other: Any) -> bool:
+        other_path = other if isinstance(other, Path) else Path(other)
+        other_keys = tuple(other_path)
+        self_keys = tuple(self)
+        return len(other_keys) <= len(self_keys) and self_keys[: len(other_keys)] == other_keys
+
+    def is_ancestor_of(self, other: Any, *, strict: bool = False) -> bool:
+        other_path = other if isinstance(other, Path) else Path(other)
+        if strict and len(self) >= len(other_path):
+            return False
+        return other_path.starts_with(self)
+
+    def relative_to(self, other: Any) -> Path:
+        other_path = other if isinstance(other, Path) else Path(other)
+        if not self.starts_with(other_path):
+            raise ValueError(f"{self!r} does not start with {other_path!r}")
+        return self[len(other_path):]
+
     def parent(self, levels: int = 1) -> Path:
         if levels < 0:
             raise ValueError("levels must be >= 0")
@@ -353,7 +391,30 @@ class Path:
             return self
         if levels >= len(self.nodes):
             return Path((), root=self.root)
-        return Path._from_nodes(self.nodes[:-levels], root=self.root)
+        return self[:-levels]
+
+    def _slice(self, key: slice) -> Path:
+        sliced_nodes = self.nodes[key]
+        if not sliced_nodes:
+            root = self.root if (key.start in (None, 0)) else MISSING
+            return Path((), root=root)
+
+        start = 0 if key.start is None else key.start
+        root = self.root if start == 0 else MISSING
+        first_container = MISSING
+        if start > 0 and self.root is not MISSING:
+            first_container = self[:start].resolve()
+
+        nodes: list[PathNode] = []
+        parent_node: PathNode | None = None
+        for index, original in enumerate(sliced_nodes):
+            container = original.container
+            if index == 0 and first_container is not MISSING:
+                container = first_container
+            node = PathNode(key=original.key, container=container, parent_node=parent_node)
+            nodes.append(node)
+            parent_node = node
+        return Path._from_nodes(nodes, root=root)
 
     def child(self, key: PathKey) -> Path:
         parent_node = self.nodes[-1] if self.nodes else None
@@ -364,7 +425,7 @@ class Path:
 
     def __add__(self, other: Any) -> Path:
         if isinstance(other, Path):
-            other_keys: tuple[PathKey, ...] = other.keys
+            other_keys: tuple[PathKey, ...] = tuple(other)
         elif isinstance(other, (str, int)):
             other_keys = (other,)  # type: ignore[assignment]
         else:
@@ -386,11 +447,13 @@ class Path:
             left_keys = tuple(other)
         except TypeError:
             return NotImplemented
-        return Path(left_keys + self.keys, root=self.root)
+        return Path(left_keys + tuple(self), root=self.root)
 
-    def __getitem__(self, key: PathKey) -> Path:
+    def __getitem__(self, key: PathKey | slice) -> Path:
+        if isinstance(key, slice):
+            return self._slice(key)
         if not isinstance(key, (int, str)):
-            raise TypeError(f"Path indices must be int or str, got {type(key).__name__}")
+            raise TypeError(f"Path indices must be int, str, or slice, got {type(key).__name__}")
         return self.child(key)
 
     def __getattr__(self, name: str) -> Path:
@@ -418,7 +481,7 @@ class Path:
 
     def __str__(self) -> str:
         parts: list[str] = ["$"]
-        for key in self.keys:
+        for key in self:
             if isinstance(key, int):
                 parts.append(f"[{key}]")
             else:

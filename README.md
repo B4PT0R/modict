@@ -90,6 +90,8 @@ assert u.country == "FR"
 
 Tip: Annotated fields without defaults are not required by default; they provide type validation/coercion when the key is present. Plain annotations and class defaults are enough for most fields. Use `modict.field(...)` when you need more control (required flag, explicit hint).
 
+`repr(modict)` shows the live user-facing view of the structure. Computed fields are evaluated for display and rendered as `Computed(current_value)` so they stay identifiable in console output.
+
 ## Path-Based Tools
 
 `modict` comes with a consistent path system for reading/writing nested structures (including inside lists), plus a `Path` object for disambiguation and introspection.
@@ -109,13 +111,20 @@ You can target nested values using:
 from modict import Path
 
 p = Path("$.users[0].name")
-assert p.keys == ("users", 0, "name")   # .keys is a property
+assert tuple(p) == ("users", 0, "name")
 assert str(p) == "$.users[0].name"      # __str__ renders back to JSONPath
+assert repr(p) == "Path($.users[0].name)"
+
+assert p.starts_with(("users", 0))
+assert p.relative_to(("users",)) == Path((0, "name"))
+
+bound = p.with_root({"users": [{"name": "Alice"}]})
+assert bound.resolve() == "Alice"
 ```
 
 Internally, a `Path` is a tuple of `PathNode` components. Each node carries:
 - the **key/index** (`"users"`, `0`, `"name"`)
-- the **origin container class** (`dict`, `list`, …) when it can be inferred (`container_class`), which lets `walk()` → `unwalk()` preserve container types.
+- an optional reference to the **origin container instance** when it can be inferred, which lets helpers distinguish `Mapping` vs `Sequence` structure during reconstruction.
 
 All nested helpers accept JSONPath strings, tuples, or `Path` objects interchangeably.
 
@@ -131,13 +140,23 @@ m.set_nested("$.user.age", 30)
 m.has_nested("$.user.age")            # True
 m.pop_nested("$.user.age")            # 30
 m.del_nested("$.user.name")           # removes the key
+
+m.set_nested(
+    "$.prefs.theme",
+    "dark",
+    create_missing=True,
+    container_factory=lambda path: {},
+)
 ```
 
 ### Paths in deep traversal
 
 - `walk()` yields `(Path, value)` leaf pairs.
 - `walked()` returns a `{Path: value}` mapping.
-- `unwalk(walked)` reconstructs a nested structure from a `{Path: value}` mapping, optionnaly attempting to preserve container classes when possible.
+- `unwalk(walked)` reconstructs a nested structure from a `{Path: value}` mapping using plain `dict` / `list` containers.
+- `unwalk(..., kind_resolver=...)` can refine the inferred structure per container path.
+- `ignore_types=True` remains available as a legacy mode to ignore `Path` hints and use only local key-shape heuristics.
+- `modict.unwalk(...)` then retypes the root mapping through the target class, so model validation/coercion can re-establish the desired root type.
 
 ## Core Concepts
 
@@ -375,7 +394,7 @@ class Msg(modict):
   - `json_encoders`: a `{type: callable}` mapping used as fallback encoders by `dumps()`/`dump()`.
 - `validate_default`: when `True`, default field values are type-checked at class creation time (skips `Factory`/`Computed`).
 - `from_attributes`: when `True`, `MyModict(obj)` can read declared fields from `obj.field` attributes (when `obj` is not a mapping).
-- `override_computed`: when `False` (default), computed fields are protected: you cannot overwrite or delete them, and you cannot pass initial values for them at construction. Set to `True` to allow it explicitly.
+- `override_computed`: when `False` (default), computed fields are protected at runtime: you cannot overwrite or delete them on an existing instance. During model construction/casting, class-declared computed fields still win over incoming values so the target model contract is preserved.
 - `require_all`: when `True`, all declared class fields must be present at initialization; annotation-only fields become required and cannot be deleted.
 - `evaluate_computed`: when `True` (default), computed fields are evaluated on access. When `False`, the `Computed` object itself is returned (pure storage mode, no evaluation).
 
@@ -499,7 +518,7 @@ For serialization beyond JSON (e.g. YAML, MessagePack), `to_jsonable(obj, encode
 ### Deep operations on nested structures
 
 - `walk()` / `walked()`: flatten a nested structure to `(Path, value)` pairs.
-- `unwalk(walked)`: reconstruct a nested structure from a `{Path: value}` mapping, preserving container classes when possible.
+- `unwalk(walked, *, kind_resolver=None)`: reconstruct a nested structure from a `{Path: value}` mapping using structural `dict` / `list` containers, with an optional hook to refine inferred `mapping` / `sequence` kinds per path. The root can then be recast through `modict.unwalk(...)`.
 - `merge(mapping)`: deep, in-place merge (mappings merge by key; sequences merge by index). Returns `None` — modifies in place.
 - `diff(mapping)`: deep diff — returns `{Path: (left, right)}` with `MISSING` for absent values.
 - `diffed(mapping)`: minimal nested patch — returns a plain modict containing only the changes needed so that `self.merge(self.diffed(other))` equals `other`. Keys removed in `other` are set to `MISSING`.
@@ -532,8 +551,8 @@ Core behaviors implemented here:
 This package is responsible for paths, nested operations, and deep traversal. See [modict/collections_utils/README.md](modict/collections_utils/README.md) and [modict/path_utils/README.md](modict/path_utils/README.md) for more details.
 
 - `_path.py`: `Path` / `PathNode` — JSONPath (RFC 9535) parsing and formatting via `jsonpath-ng`.
-  - Type-aware path components (`PathNode.container_class`) so `walk()` → `unwalk()` can preserve container types.
-  - `Path.normalize(...)` to accept JSONPath strings, tuples, or `Path` objects.
+  - Path components can cache origin container references so `walk()` → `unwalk()` can distinguish `Mapping` vs `Sequence` structure without recreating arbitrary concrete container classes.
+  - `Path(...)` accepts JSONPath strings, tuples/lists of keys, or another `Path`.
 - `_basic.py`: container-agnostic `get_key` / `set_key` / `has_key` / `keys` / `unroll`.
 - `_advanced.py`: `get_nested` / `set_nested` / `pop_nested` / `del_nested` / `has_nested`, `walk` / `walked` / `unwalk`, `deep_merge` / `diff_nested` / `deep_equals`.
 - `_view.py`: `View` — base class for custom collection views over mappings or sequences.
@@ -599,7 +618,7 @@ From `from modict import ...`:
 - Conversion:
   - `modict.convert(obj, seen=None) -> Any`
   - `modict.unconvert(obj, seen=None) -> Any`
-  - `modict.unwalk(walked: dict[Path, Any]) -> Any`
+  - `modict.unwalk(walked: dict[Path, Any], ignore_types: bool = False, *, kind_resolver=None) -> Any`
 
 ### `modict` instance methods
 
@@ -615,12 +634,12 @@ Instance methods keep standard dict behavior, plus:
   - `dump(fp_or_path, exclude_none=False, encoders=None, **json_kwargs) -> None`
 - Nested operations (JSONPath / tuple / Path):
   - `get_nested(path, default=MISSING)`
-  - `set_nested(path, value)`
+  - `set_nested(path, value, *, create_missing=False, container_factory=None)` where `container_factory` is called as `factory(path)`
   - `del_nested(path)`
   - `pop_nested(path, default=MISSING)`
   - `has_nested(path) -> bool`
 - Key operations:
-  - `rename(mapping_or_kwargs) -> None` (in-place)
+  - `translate(mapping_or_kwargs) -> modict` (returns a plain translated modict)
   - `exclude(*keys) -> modict`
   - `extract(*keys) -> modict`
   - `find(query=MISSING, *, path_constraint=MISSING, value_constraint=MISSING) -> Generator` — lazily yields `(Path, value)` pairs matching a `Query` or inline constraints (deep)

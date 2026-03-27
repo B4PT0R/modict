@@ -18,6 +18,7 @@ def test_bind_and_resolve_dict_list():
     path = Path(["users", 1, "name"], root=data)
     assert path.resolve() == "Grace"
     assert str(path) == "$.users[1].name"
+    assert repr(path) == "Path($.users[1].name)"
     assert path.nodes[0].parent_node is None
     assert path.nodes[1].parent_node is path.nodes[0]
     assert path.nodes[2].parent_node is path.nodes[1]
@@ -26,7 +27,7 @@ def test_bind_and_resolve_dict_list():
 def test_bind_accepts_jsonpath_string():
     data = {"users": [{"name": "Ada"}, {"name": "Grace"}]}
     path = Path("$.users[0].name", root=data)
-    assert path.keys == ("users", 0, "name")
+    assert tuple(path) == ("users", 0, "name")
     assert path.resolve() == "Ada"
 
 
@@ -34,7 +35,7 @@ def test_bind_without_keys_is_root_path():
     data = {"a": 1}
     root = Path(root=data)
     assert root.resolve() is data
-    assert root.keys == ()
+    assert tuple(root) == ()
 
 
 def test_bind_and_resolve_object_attribute():
@@ -56,6 +57,26 @@ def test_parent_and_child_roundtrip():
     parent = path.parent()
     assert parent.resolve() == {"name": "Ada"}
     assert parent.child("name").resolve() == "Ada"
+
+
+def test_path_prefix_slice_preserves_binding():
+    data = {"users": [{"name": "Ada"}]}
+    path = Path(["users", 0, "name"], root=data)
+
+    prefix = path[:2]
+
+    assert tuple(prefix) == ("users", 0)
+    assert prefix.resolve() == {"name": "Ada"}
+
+
+def test_path_suffix_slice_preserves_cached_containers():
+    data = {"users": [{"name": "Ada"}]}
+    path = Path(["users", 0, "name"], root=data)
+
+    suffix = path[1:]
+
+    assert tuple(suffix) == (0, "name")
+    assert suffix.resolve() == "Ada"
 
 
 def test_set_and_delete_inplace_dict():
@@ -97,7 +118,7 @@ def test_from_tuple_without_root_is_symbolic_and_binds():
 def test_from_jsonpath_without_root_is_symbolic_and_binds():
     data = {"users": [{"name": "Ada"}]}
     p = Path("$.users[0].name")
-    assert p.keys == ("users", 0, "name")
+    assert tuple(p) == ("users", 0, "name")
     assert Path(p, root=data).resolve() == "Ada"
 
 
@@ -131,6 +152,19 @@ def test_symbolic_path_caches_containers_after_resolve():
         p.resolve(other)
 
 
+def test_constructing_from_path_preserves_cached_containers():
+    data = {"users": [{"name": "Ada"}]}
+    other = {"users": [{"name": "Grace"}]}
+    original = Path(("users", 0, "name"))
+    assert original.resolve(data) == "Ada"
+
+    cloned = Path(original)
+
+    assert cloned.resolve() == "Ada"
+    with pytest.raises(ResolutionError):
+        cloned.resolve(other)
+
+
 def test_exists_for_bound_and_symbolic_paths():
     data = {"a": {"b": 1}}
     bound_ok = Path(("a", "b"), root=data)
@@ -147,12 +181,47 @@ def test_exists_for_bound_and_symbolic_paths():
 def test_add_concatenates_paths_and_keys():
     data = {"a": {"b": 1}}
     p = Path(("a",)) + ("b",)
-    assert p.keys == ("a", "b")
+    assert tuple(p) == ("a", "b")
     assert p.resolve(data) == 1
 
     p2 = Path(("a",)) + Path(("b",))
-    assert p2.keys == ("a", "b")
+    assert tuple(p2) == ("a", "b")
     assert p2.resolve(data) == 1
+
+
+def test_path_iterates_over_keys():
+    path = Path(("users", 0, "name"))
+    assert tuple(path) == ("users", 0, "name")
+    assert len(path) == 3
+
+
+def test_starts_with_and_is_ancestor_of():
+    path = Path(("users", 0, "name"))
+
+    assert path.starts_with(("users",))
+    assert path.starts_with(Path(("users", 0)))
+    assert not path.starts_with(("users", 1))
+
+    parent = Path(("users",))
+    assert parent.is_ancestor_of(path)
+    assert parent.is_ancestor_of(path, strict=True)
+    assert not path.is_ancestor_of(path, strict=True)
+
+
+def test_relative_to_returns_suffix_path():
+    data = {"users": [{"name": "Ada"}]}
+    path = Path(("users", 0, "name"), root=data)
+
+    relative = path.relative_to(("users",))
+
+    assert tuple(relative) == (0, "name")
+    assert relative.resolve() == "Ada"
+
+
+def test_relative_to_raises_when_prefix_does_not_match():
+    path = Path(("users", 0, "name"))
+    with pytest.raises(ValueError):
+        path.relative_to(("accounts",))
 
 
 def test_walk_yields_leaf_paths_and_values():
@@ -200,6 +269,18 @@ def test_set_root_rebinds_path_inplace():
     assert p.resolve() == 1
     p.set_root(data2)
     assert p.resolve() == 2
+
+
+def test_with_root_returns_rebound_copy():
+    data1 = {"a": {"b": 1}}
+    data2 = {"a": {"b": 2}}
+    original = Path(("a", "b"), root=data1)
+
+    rebound = original.with_root(data2)
+
+    assert original.resolve() == 1
+    assert rebound.resolve() == 2
+    assert original is not rebound
 
 
 def test_pathnode_resolution_failure_raises_resolutionerror():

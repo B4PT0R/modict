@@ -86,7 +86,7 @@ Recursive aliases and cyclic values are handled defensively:
 ### Functions
 
 - `check_type(hint, value)` — raises `TypeMismatchError` if value does not match hint
-- `coerce(value, hint)` — best-effort conversion; returns original value on failure
+- `coerce(value, hint)` — best-effort conversion; raises `CoercionError` on failure
 - `can_coerce(value, hint) -> bool` — check without raising
 
 ### Decorators

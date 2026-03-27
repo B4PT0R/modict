@@ -21,6 +21,7 @@ from modict import (
     modict,
     typechecked,
 )
+from modict.model_api import Computed
 
 
 def test_attribute_access_and_defaults():
@@ -50,8 +51,13 @@ def test_auto_convert_nested_structures():
     assert first_user.profile.city == "Paris"
     assert isinstance(dict.__getitem__(first_user, "profile"), modict)
 
-    # set_nested should create missing levels
-    data.set_nested("$.settings.theme", "dark")
+    # set_nested can create missing levels explicitly
+    data.set_nested(
+        "$.settings.theme",
+        "dark",
+        create_missing=True,
+        container_factory=lambda path: {},
+    )
     assert data.get_nested("$.settings.theme") == "dark"
 
 
@@ -165,22 +171,23 @@ def test_dump_and_load_roundtrip(tmp_path):
     assert loaded2 == m
 
 
-def test_rename_and_extract_exclude():
+def test_translate_and_extract_exclude():
     class User(modict):
         name: str
         age: int
 
     user = User(name="Alice", age=30)
 
-    # rename
-    user.rename(name="full_name")
-    assert "full_name" in user and "name" not in user
-    assert user.full_name == "Alice"
+    translated = user.translate(name="full_name")
+    assert type(translated) is modict
+    assert "full_name" in translated and "name" not in translated
+    assert translated.full_name == "Alice"
+    assert "name" in user and user.name == "Alice"
 
     # extract/exclude proxies
-    extracted = dict(user.extract("full_name"))
+    extracted = dict(translated.extract("full_name"))
     assert extracted == {"full_name": "Alice"}
-    excluded = dict(user.exclude("age"))
+    excluded = dict(translated.exclude("age"))
     assert excluded == {"full_name": "Alice"}
 
 
@@ -347,7 +354,7 @@ def test_computed_override_can_be_enabled():
     assert "sum" not in m
 
 
-def test_computed_override_at_init_is_blocked_by_default():
+def test_computed_declared_by_target_model_override_input_at_init():
     class Calc(modict):
         a: int = 1
 
@@ -355,19 +362,26 @@ def test_computed_override_at_init_is_blocked_by_default():
         def doubled(self) -> int:
             return self.a * 2
 
-    with pytest.raises(TypeError):
-        Calc({"a": 1, "doubled": 2})
+    c = Calc({"a": 1, "doubled": 999})
+    assert c.doubled == 2
 
-    class CalcAllow(modict):
-        _config = modict.config(override_computed=True)
+
+def test_cast_reinstalls_target_computed_over_incoming_value():
+    class Source(modict):
+        a: int = 1
+
+    class Target(modict):
         a: int = 1
 
         @modict.computed()
         def doubled(self) -> int:
             return self.a * 2
 
-    c = CalcAllow({"a": 1, "doubled": 2})
-    assert c.doubled == 2
+    source = Source({"a": 3, "doubled": 999})
+    casted = Target(source)
+
+    assert casted.a == 3
+    assert casted.doubled == 6
 
 
 def test_manual_invalidate_computed_for_deps_empty():
@@ -453,7 +467,7 @@ def test_require_all_prevents_deleting_computed_fields():
         del m["doubled"]
 
 
-def test_require_all_prevents_clear_and_rename():
+def test_require_all_prevents_clear_and_translate_stays_safe():
     class M(modict):
         _config = modict.config(require_all=True, override_computed=True)
         a: int
@@ -465,13 +479,15 @@ def test_require_all_prevents_clear_and_rename():
     m = M({"a": 1})
     with pytest.raises(TypeError):
         m.clear()
-    with pytest.raises(TypeError):
-        m.rename(a="x")  # declared field
 
     m.extra = 123
-    m.rename(extra="extra2")  # dynamic key is allowed
-    assert "extra" not in m
-    assert m.extra2 == 123
+    translated = m.translate(a="x", extra="extra2")
+    assert type(translated) is modict
+    assert translated["x"] == 1
+    assert translated["extra2"] == 123
+    assert isinstance(dict.__getitem__(translated, "doubled"), Computed)
+    assert m.a == 1
+    assert m.extra == 123
 
 def test_manual_invalidate_computed_cascades_to_dependants():
     calls = {"sum": 0, "double": 0}

@@ -7,7 +7,7 @@ while maintaining type safety and providing clear error handling.
 
 Key Features:
     - JSONPath support: Access nested values using JSONPath strings (RFC 9535)
-    - Path objects: Strongly-typed Path objects that preserve container type information
+    - Path objects: Strongly-typed Path objects that can carry Mapping/Sequence interface hints
     - Deep operations: Compare, merge, and modify nested structures
     - Type-safe: Comprehensive type hints and runtime type checking
     - Container views: Create custom views over container data
@@ -49,8 +49,8 @@ Type Definitions:
 Notes:
     - JSONPath strings must start with '$' (e.g., "$.a.b[0].c")
     - Tuple paths are ambiguous for integer keys and converted to Path objects
-    - Path objects preserve container type information (mapping vs sequence)
-    - Container operations maintain the original container types
+    - Path objects can carry Mapping/Sequence interface hints (used by `unwalk()`)
+    - Reconstruction helpers rebuild structural `dict` / `list` containers unless a higher-level model recasts the result
     - The MISSING sentinel distinguishes missing values from None values
 """
 
@@ -114,31 +114,66 @@ def get_nested(obj: Container, path: PathType, default: Any = MISSING) -> Any:
             raise
         return default
 
-def set_nested(obj:Container, path: PathType, value):
-    """Set a nested value, creating intermediate containers as needed.
+def set_nested(
+    obj: Container,
+    path: PathType,
+    value,
+    *,
+    create_missing: bool = False,
+    container_factory: Optional[Callable[[Path], MutableContainer]] = None,
+):
+    """Set a nested value.
 
-    Creates missing containers (dict for string keys, list for integer keys)
-    along the path if they don't exist.
+    By default, all intermediate containers along the path must already exist.
+    If `create_missing=True`, missing intermediate containers are created using
+    `container_factory(path)`.
 
     Args:
         obj: Container to modify
         path: Either JSONPath string ("$.a[0].b"), tuple of keys, or Path object
         value: Value to set
+        create_missing: Whether to create missing intermediate containers
+        container_factory: Factory used to create missing intermediate containers.
+            It receives the Path of the missing key/container being created.
 
     Raises:
         TypeError: If obj is not a container or if any container we attempt to write in is immutable
+        KeyError: If an intermediate container is missing and create_missing=False
 
     Examples:
         >>> data = {}
-        >>> set_nested(data, "$.a.b[0].c", 42)
+        >>> set_nested(data, "$.a", 42)
         >>> data
+        {'a': 42}
+
+        >>> template = {"a": {"b": [{"c": 0}]}}
+        >>> path = next(path for path, _ in walk(template) if str(path) == "$.a.b[0].c")
+        >>> set_nested({}, path, 42, create_missing=True)
         {'a': {'b': [{'c': 42}]}}
     """
     if not is_container(obj):
         raise TypeError(f"Expected a Mapping or Sequence container, got {type(obj)}")
 
-    path_obj = Path(path)
-    keys = path_obj.keys
+    path_obj = path if isinstance(path, Path) else Path(path)
+    keys = tuple(path_obj)
+
+    if not keys:
+        raise ValueError("Cannot set the root path")
+
+    def default_container_factory(current_path: Path) -> MutableContainer:
+        next_index = len(current_path.nodes)
+        if next_index < len(path_obj.nodes):
+            original_container = path_obj.nodes[next_index].container
+            if isinstance(original_container, Mapping):
+                return {}
+            if isinstance(original_container, Sequence) and not isinstance(original_container, (str, bytes, bytearray)):
+                return []
+        raise TypeError(
+            f"Cannot infer missing container type at {current_path}. "
+            "Pass a Path carrying container metadata or provide container_factory."
+        )
+
+    factory = container_factory or default_container_factory
 
     current = obj
     for i, key in enumerate(keys):
@@ -146,19 +181,22 @@ def set_nested(obj:Container, path: PathType, value):
             # Terminal key reached, we set the value and return
             set_key(current, key, value)
             return
-        elif not has_key(current, key) or current[key] is MISSING:
-            # Need to create intermediate container
-            # Look at next key to decide what type to create
-            next_key = keys[i + 1]
-            if isinstance(next_key, int):
-                # Next key is int, create a list
-                set_key(current, key, [])
-            else:
-                # Next key is string, create a dict
-                set_key(current, key, {})
-            current = current[key]
-        else:
-            current = current[key]
+        if not has_key(current, key) or current[key] is MISSING:
+            if not create_missing:
+                current_path = path_obj[: i + 1]
+                raise KeyError(f"Missing intermediate container at {current_path}")
+            current_path = path_obj[: i + 1]
+            new_container = factory(current_path)
+            if not is_mutable_container(new_container):
+                raise TypeError(
+                    f"container_factory must return a MutableMapping or MutableSequence, got {type(new_container).__name__}"
+                )
+            set_key(current, key, new_container)
+
+        current = current[key]
+        if not is_container(current):
+            current_path = path_obj[: i + 1]
+            raise TypeError(f"Path {current_path} resolves to non-container {type(current).__name__}")
 
 def pop_nested(obj:Container, path:PathType, default=MISSING):
     """deletes a nested key/index and returns the value (if found).
@@ -169,7 +207,7 @@ def pop_nested(obj:Container, path:PathType, default=MISSING):
         - the path actually exists but ends in an immutable container in which we can't pop
     """
     path_obj = Path(path)
-    keys = path_obj.keys
+    keys = tuple(path_obj)
 
     if not keys:
         raise ValueError("Cannot pop the root path")
@@ -376,7 +414,7 @@ def first_keys(walked: Dict[Path, Any]) -> Set[Key]:
         >>> first_keys(walked)
         {'a', 'x'}
     """
-    return set(p.keys[0] for p in walked if len(p.keys) > 0)
+    return set(tuple(p)[0] for p in walked if len(p) > 0)
 
 def is_seq_based(walked: Dict[Path, Any]) -> bool:
     """Determine if the walked structure was initially a Sequence.
@@ -396,16 +434,140 @@ def is_seq_based(walked: Dict[Path, Any]) -> bool:
     fk = first_keys(walked)
     return fk == set(range(len(fk)))
 
-def unwalk(walked: Dict[Path, Any], ignore_types: bool = False) -> MutableContainer:
+
+def _container_kind_from_instance(container: Any) -> Optional[str]:
+    if isinstance(container, Mapping):
+        return "mapping"
+    if isinstance(container, Sequence) and not isinstance(container, (str, bytes, bytearray)):
+        return "sequence"
+    return None
+
+
+def _validate_container_kind(kind: str, path: Path) -> str:
+    if kind not in {"mapping", "sequence"}:
+        raise ValueError(
+            f"kind_resolver must return 'mapping' or 'sequence' for {path}, got {kind!r}"
+        )
+    return kind
+
+
+class _UnwalkNode:
+    __slots__ = ("children", "value", "has_value", "hinted_kind", "int_keys", "has_non_int_key", "built")
+
+    def __init__(self) -> None:
+        self.children: dict[Key, _UnwalkNode] = {}
+        self.value: Any = MISSING
+        self.has_value = False
+        self.hinted_kind: Optional[str] = None
+        self.int_keys: set[int] = set()
+        self.has_non_int_key = False
+        self.built: Any = MISSING
+
+
+def _infer_unwalk_node_kind(
+    node: _UnwalkNode,
+    path: Path,
+    *,
+    kind_resolver: Optional[Callable[[Path, str], str]] = None,
+) -> Optional[str]:
+    inferred_kind = node.hinted_kind
+
+    if inferred_kind is None and node.children:
+        if not node.has_non_int_key and node.int_keys == set(range(len(node.int_keys))):
+            inferred_kind = "sequence"
+        else:
+            inferred_kind = "mapping"
+
+    if inferred_kind is None and node.has_value:
+        inferred_kind = _container_kind_from_instance(node.value)
+
+    if inferred_kind is not None and kind_resolver is not None:
+        inferred_kind = _validate_container_kind(kind_resolver(path, inferred_kind), path)
+
+    return inferred_kind
+
+
+def _build_unwalk_tree(
+    walked: Dict[Path, Any],
+    *,
+    use_path_hints: bool,
+    kind_resolver: Optional[Callable[[Path, str], str]] = None,
+) -> _UnwalkNode:
+    root = _UnwalkNode()
+
+    for path, value in walked.items():
+        current = root
+        if use_path_hints:
+            root_kind = _container_kind_from_instance(path.root)
+            if root_kind is not None and current.hinted_kind is None:
+                current.hinted_kind = root_kind
+
+        for depth, key in enumerate(path):
+            if current.has_value:
+                current_path = path[:depth]
+                raise ValueError(f"Cannot add children under leaf path {current_path}")
+
+            if isinstance(key, int):
+                current.int_keys.add(key)
+            else:
+                current.has_non_int_key = True
+
+            if use_path_hints and current.hinted_kind is None:
+                hinted_kind = _container_kind_from_instance(path.nodes[depth].container)
+                if hinted_kind is not None:
+                    current.hinted_kind = hinted_kind
+
+            child = current.children.get(key)
+            if child is None:
+                child = _UnwalkNode()
+                current.children[key] = child
+            current = child
+
+        if current.children:
+            raise ValueError(f"Cannot set leaf value at {path}: the path already has children")
+
+        current.value = value
+        current.has_value = True
+
+        if use_path_hints and current.hinted_kind is None:
+            leaf_kind = _container_kind_from_instance(current.value)
+            if leaf_kind is not None:
+                current.hinted_kind = leaf_kind
+
+    if kind_resolver is None:
+        return root
+
+    stack: list[tuple[_UnwalkNode, Path]] = [(root, Path())]
+    while stack:
+        node, path = stack.pop()
+        inferred_kind = _infer_unwalk_node_kind(node, path, kind_resolver=kind_resolver)
+        if inferred_kind is not None:
+            node.hinted_kind = inferred_kind
+        for key, child in node.children.items():
+            stack.append((child, path.child(key)))
+
+    return root
+
+
+def unwalk(
+    walked: Dict[Path, Any],
+    ignore_types: bool = False,
+    *,
+    kind_resolver: Optional[Callable[[Path, str], str]] = None,
+) -> MutableContainer:
     """Reconstruct a nested structure from a flattened dict.
 
     Args:
         walked: A Path:value flattened dictionary
-        ignore_types: If True, ignore container_class metadata and use only dict/list
-                     (useful to avoid reconstructing modict instances with defaults)
+        ignore_types: Legacy compatibility flag. If True, ignore Path-provided
+            Mapping/Sequence hints and infer structure only from local key shape
+            (`set(range(n))` => sequence, else mapping).
+        kind_resolver: Optional hook called as ``kind_resolver(path, inferred_kind)``
+            for every reconstructed container path. It may refine the inferred
+            structure by returning either ``"mapping"`` or ``"sequence"``.
 
     Returns:
-        Reconstructed nested structure with exact container types preserved (or plain dict/list if ignore_types=True)
+        Reconstructed nested structure using plain dict/list containers at every level
 
     Examples:
         >>> walked = {Path($.a[0]): 1, Path($.a[1].b): 2, Path($.c): 3}
@@ -415,55 +577,43 @@ def unwalk(walked: Dict[Path, Any], ignore_types: bool = False) -> MutableContai
         >>> unwalk(walked)
         ['a', 'b', 'c']
 
-        >>> # With ignore_types=True, always returns plain dict/list
+        >>> # With ignore_types=True, ignore Path hints and use only key-shape heuristics
         >>> unwalk(walked, ignore_types=True)
-        {'a': [1, {'b': 2}], 'c': 3}  # Plain dict, not modict
+        {'a': [1, {'b': 2}], 'c': 3}
     """
-    # Determine root container type from the cached container instances in PathNodes
-    # Strategy:
-    #   1. If ignore_types=True: always use plain dict/list
-    #   2. Otherwise, try to get the container type from the first path's first node
-    #   3. Fallback to heuristic (check if keys are sequential integers)
+    if not walked:
+        return {}
 
-    if walked:
-        if not ignore_types:
-            # Try to get container instance from first path's first node
-            first_path = next(iter(walked.keys()))
-            container_instance = None
+    root = _build_unwalk_tree(
+        walked,
+        use_path_hints=not ignore_types,
+        kind_resolver=kind_resolver,
+    )
+    stack: list[tuple[_UnwalkNode, Path, bool]] = [(root, Path(), False)]
 
-            # Look through nodes to find one with a cached container
-            if first_path.nodes:
-                for node in first_path.nodes:
-                    if node.container is not MISSING:
-                        container_instance = node.container
-                        break
+    while stack:
+        node, path, ready = stack.pop()
+        if not ready:
+            stack.append((node, path, True))
+            for key, child in reversed(tuple(node.children.items())):
+                stack.append((child, path.child(key), False))
+            continue
 
-            if container_instance is not None:
-                # Try to create an instance of the same type
-                container_type = type(container_instance)
-                try:
-                    base = container_type()
-                except (TypeError, AttributeError):
-                    # Container type needs arguments or is not instantiable
-                    # Fallback to plain dict/list based on type
-                    if isinstance(container_instance, Sequence):
-                        base = []
-                    else:
-                        base = {}
-            else:
-                # No container cached, use heuristic
-                base = [] if is_seq_based(walked) else {}
+        kind = _infer_unwalk_node_kind(node, path)
+        if kind == "sequence":
+            built: Any = []
+            for key, child in node.children.items():
+                set_key(built, key, child.built)
+        elif kind == "mapping":
+            built = {key: child.built for key, child in node.children.items()}
+        elif node.has_value:
+            built = node.value
         else:
-            # ignore_types=True, use plain dict/list
-            base = [] if is_seq_based(walked) else {}
-    else:
-        # Empty walked dict
-        base = {}
+            built = {}
 
-    for path, value in walked.items():
-        set_nested(base, path, value)
+        node.built = built
 
-    return base
+    return root.built
 
 def deep_equals(obj1: Container, obj2: Container, excluded: Optional[Tuple[Type, ...]] = None) -> bool:
     """Compare two nested structures deeply by comparing their walked dicts.
@@ -518,7 +668,7 @@ def diff_nested(
         if isinstance(obj1, Mapping) and isinstance(obj2, Mapping):
             all_keys = set(keys(obj1)) | set(keys(obj2))
             for key in all_keys:
-                new_path = Path(path.keys + (key,))
+                new_path = Path(tuple(path) + (key,))
                 val1 = obj1.get(key, MISSING) if isinstance(obj1, dict) else (obj1[key] if has_key(obj1, key) else MISSING)
                 val2 = obj2.get(key, MISSING) if isinstance(obj2, dict) else (obj2[key] if has_key(obj2, key) else MISSING)
 
@@ -534,7 +684,7 @@ def diff_nested(
         elif isinstance(obj1, Sequence) and isinstance(obj2, Sequence):
             max_len = max(len(obj1), len(obj2))
             for idx in range(max_len):
-                new_path = Path(path.keys + (idx,))
+                new_path = Path(tuple(path) + (idx,))
                 val1 = obj1[idx] if idx < len(obj1) else MISSING
                 val2 = obj2[idx] if idx < len(obj2) else MISSING
 

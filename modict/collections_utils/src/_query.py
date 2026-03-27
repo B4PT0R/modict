@@ -25,7 +25,7 @@ class Query:
     Examples::
 
         # Any leaf whose key is "email"
-        Query(lambda p: p.keys[-1] == "email")
+        Query(lambda p: tuple(p)[-1] == "email")
 
         # JSONPath wildcard + value predicate
         Query("$.users[*].age", lambda v: v > 30)

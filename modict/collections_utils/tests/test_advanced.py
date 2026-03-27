@@ -57,14 +57,29 @@ class TestGetNested:
 
 
 class TestSetNested:
-    def test_set_nested_creates_structure(self):
+    def test_set_nested_missing_intermediate_raises_by_default(self):
         data = {}
-        set_nested(data, "$.a.b[0].c", 42)
+        with pytest.raises(KeyError, match="Missing intermediate container"):
+            set_nested(data, "$.a.b[0].c", 42)
+
+    def test_set_nested_creates_structure_with_factory(self):
+        data = {}
+
+        def factory(path):
+            return [] if tuple(path) == ("a", "b") else {}
+
+        set_nested(data, "$.a.b[0].c", 42, create_missing=True, container_factory=factory)
         assert data == {"a": {"b": [{"c": 42}]}}
 
     def test_set_nested_tuple_path(self):
         data = {"a": {"b": [{"c": 42}]}}
-        set_nested(data, ("a", "b", 1, "d"), "hello")
+        set_nested(
+            data,
+            ("a", "b", 1, "d"),
+            "hello",
+            create_missing=True,
+            container_factory=lambda path: {},
+        )
         assert data == {"a": {"b": [{"c": 42}, {"d": "hello"}]}}
 
     def test_set_nested_existing_path(self):
@@ -75,6 +90,20 @@ class TestSetNested:
     def test_set_nested_on_non_container(self):
         with pytest.raises(TypeError):
             set_nested(123, "$.a", 1)
+
+    def test_set_nested_default_factory_requires_path_metadata(self):
+        data = {}
+        with pytest.raises(TypeError, match="Cannot infer missing container type"):
+            set_nested(data, "$.a.b", 1, create_missing=True)
+
+    def test_set_nested_default_factory_uses_path_metadata(self):
+        template = {"a": {"b": [{"c": 0}]}}
+        template_path = next(path for path, _ in walk(template) if str(path) == "$.a.b[0].c")
+
+        data = {}
+        set_nested(data, template_path, 42, create_missing=True)
+
+        assert data == {"a": {"b": [{"c": 42}]}}
 
 
 class TestHasNested:
@@ -118,6 +147,46 @@ class TestWalkUnwalk:
         data = {"a": {"b": 1}}
         w = list(walk(data))
         assert any(isinstance(p, Path) for p, _ in w)
+
+    def test_unwalk_uses_interface_hints_for_int_key_mapping(self):
+        data = {"headers": {0: "x-zero", 1: "x-one"}}
+        snapshot = walked(data)
+
+        rebuilt = unwalk(snapshot)
+
+        assert isinstance(rebuilt, dict)
+        assert isinstance(rebuilt["headers"], dict)
+        assert rebuilt["headers"] == {0: "x-zero", 1: "x-one"}
+
+    def test_unwalk_ignore_types_uses_local_heuristic(self):
+        data = {"headers": {0: "x-zero", 1: "x-one"}}
+        snapshot = walked(data)
+
+        rebuilt = unwalk(snapshot, ignore_types=True)
+
+        assert isinstance(rebuilt, dict)
+        assert isinstance(rebuilt["headers"], list)
+        assert rebuilt["headers"] == ["x-zero", "x-one"]
+
+    def test_unwalk_kind_resolver_can_override_inferred_kind(self):
+        data = {"headers": {0: "x-zero", 1: "x-one"}}
+        snapshot = walked(data)
+
+        rebuilt = unwalk(
+            snapshot,
+            ignore_types=True,
+            kind_resolver=lambda path, kind: "mapping" if tuple(path) == ("headers",) else kind,
+        )
+
+        assert isinstance(rebuilt, dict)
+        assert isinstance(rebuilt["headers"], dict)
+        assert rebuilt["headers"] == {0: "x-zero", 1: "x-one"}
+
+    def test_unwalk_kind_resolver_rejects_invalid_kind(self):
+        snapshot = {Path("$.a"): 1}
+
+        with pytest.raises(ValueError):
+            unwalk(snapshot, kind_resolver=lambda path, kind: "set")
 
 
 class TestDiffAndMerge:
