@@ -195,6 +195,30 @@ class TypeChecker:
             )
             if wrapper is not None
         )
+        self._required_wrapper_origins = tuple(
+            wrapper
+            for wrapper in (
+                getattr(typing, "Required", None),
+                getattr(_typing_extensions, "Required", None) if _typing_extensions is not None else None,
+            )
+            if wrapper is not None
+        )
+        self._notrequired_wrapper_origins = tuple(
+            wrapper
+            for wrapper in (
+                getattr(typing, "NotRequired", None),
+                getattr(_typing_extensions, "NotRequired", None) if _typing_extensions is not None else None,
+            )
+            if wrapper is not None
+        )
+        self._annotated_origins = tuple(
+            wrapper
+            for wrapper in (
+                getattr(typing, "Annotated", None),
+                getattr(_typing_extensions, "Annotated", None) if _typing_extensions is not None else None,
+            )
+            if wrapper is not None
+        )
         self._fast_isinstance_hints = (
             str,
             float,
@@ -330,9 +354,16 @@ class TypeChecker:
 
         annotations = getattr(hint, "__annotations__", {}) or {}
         is_total = getattr(hint, "__total__", True)
-        if is_total:
-            return set(annotations)
-        return set()
+        required_keys: set[str] = set()
+        for name, annotation in annotations.items():
+            origin = get_origin(annotation)
+            if origin in self._required_wrapper_origins:
+                required_keys.add(name)
+            elif origin in self._notrequired_wrapper_origins:
+                continue
+            elif is_total:
+                required_keys.add(name)
+        return required_keys
 
     def _protocol_member_names(self, protocol: type) -> set[str]:
         """Return the protocol members explicitly declared by a protocol type."""
@@ -622,6 +653,10 @@ class TypeChecker:
         if hasattr(types, "UnionType") and isinstance(hint, types.UnionType):
             return True
 
+        origin = get_origin(hint)
+        if origin in self._annotated_origins:
+            return True
+
         # Known special form names for validation (Protocols are handled separately)
         special_form_names = {
             'Union', 'Optional', 'ClassVar', 'Final', 'Literal',
@@ -633,7 +668,6 @@ class TypeChecker:
         name = None
         
         # For parameterized special forms, get name from origin
-        origin = get_origin(hint)
         if origin is not None:
             name = getattr(origin, '_name', None)
         
@@ -657,6 +691,8 @@ class TypeChecker:
         """
         # For parameterized special forms, get the name from the origin
         origin = get_origin(hint)
+        if origin in self._annotated_origins:
+            return "Annotated"
         if origin is not None:
             name = getattr(origin, '_name', None)
             if name:
@@ -1896,8 +1932,14 @@ class TypeChecker:
             bool: True if value implements the Protocol
         """
         # For runtime_checkable protocols, first enforce the runtime presence check.
-        if getattr(hint, "_is_runtime_protocol", False) and not isinstance(value, hint):
-            return False
+        if getattr(hint, "_is_runtime_protocol", False):
+            try:
+                if not isinstance(value, hint):
+                    return False
+            except TypeError:
+                # Python < 3.12 may refuse isinstance() on runtime protocols
+                # that declare non-method members. Fall back to explicit member checks.
+                pass
 
         # Then validate the members explicitly declared by the protocol itself.
         protocol_members = self._protocol_members(hint)

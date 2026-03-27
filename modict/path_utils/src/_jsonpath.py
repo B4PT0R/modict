@@ -6,7 +6,7 @@ from typing import Any
 from jsonpath_ng import parse
 from jsonpath_ng.jsonpath import Child, Fields, Index, JSONPath, Root, This
 
-from .path import PathKey
+from .path import PathKey, MISSING
 
 
 def keys_from_jsonpath(path: JSONPath) -> tuple[PathKey, ...]:
@@ -19,7 +19,13 @@ def keys_from_jsonpath(path: JSONPath) -> tuple[PathKey, ...]:
             raise ValueError(f"Unsupported multi-field path: {path.fields!r}")
         return (path.fields[0],)
     if isinstance(path, Index):
-        return (path.index,)
+        index = getattr(path, "index", MISSING)
+        if index is not MISSING:
+            return (index,)
+        indices = getattr(path, "indices", None)
+        if isinstance(indices, (tuple, list)) and len(indices) == 1:
+            return (indices[0],)
+        raise ValueError(f"Unsupported jsonpath_ng Index node shape: {path!r}")
     raise ValueError(f"Unsupported jsonpath_ng path node: {type(path).__name__}")
 
 
