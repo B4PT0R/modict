@@ -57,6 +57,10 @@ class TestGetNested:
 
 
 class TestSetNested:
+    def test_set_nested_root_path_is_rejected(self):
+        with pytest.raises(ValueError, match="root path"):
+            set_nested({}, Path(), 1)
+
     def test_set_nested_missing_intermediate_raises_by_default(self):
         data = {}
         with pytest.raises(KeyError, match="Missing intermediate container"):
@@ -96,6 +100,12 @@ class TestSetNested:
         with pytest.raises(TypeError, match="Cannot infer missing container type"):
             set_nested(data, "$.a.b", 1, create_missing=True)
 
+    def test_set_nested_factory_must_return_mutable_container(self):
+        data = {}
+
+        with pytest.raises(TypeError, match="MutableMapping or MutableSequence"):
+            set_nested(data, "$.a.b", 1, create_missing=True, container_factory=lambda path: ())
+
     def test_set_nested_default_factory_uses_path_metadata(self):
         template = {"a": {"b": [{"c": 0}]}}
         template_path = next(path for path, _ in walk(template) if str(path) == "$.a.b[0].c")
@@ -104,6 +114,12 @@ class TestSetNested:
         set_nested(data, template_path, 42, create_missing=True)
 
         assert data == {"a": {"b": [{"c": 42}]}}
+
+    def test_set_nested_fails_when_intermediate_value_is_not_a_container(self):
+        data = {"a": 1}
+
+        with pytest.raises(TypeError, match="non-container"):
+            set_nested(data, "$.a.b", 2, create_missing=True, container_factory=lambda path: {})
 
 
 class TestHasNested:
@@ -148,6 +164,12 @@ class TestWalkUnwalk:
         w = list(walk(data))
         assert any(isinstance(p, Path) for p, _ in w)
 
+    def test_walk_is_cycle_safe(self):
+        data = {}
+        data["self"] = data
+
+        assert list(walk(data)) == []
+
     def test_unwalk_uses_interface_hints_for_int_key_mapping(self):
         data = {"headers": {0: "x-zero", 1: "x-one"}}
         snapshot = walked(data)
@@ -188,6 +210,27 @@ class TestWalkUnwalk:
         with pytest.raises(ValueError):
             unwalk(snapshot, kind_resolver=lambda path, kind: "set")
 
+    def test_unwalk_empty_snapshot_returns_empty_mapping(self):
+        assert unwalk({}) == {}
+
+    def test_unwalk_rejects_conflicting_leaf_and_branch_paths(self):
+        snapshot = {
+            Path("$.a"): 1,
+            Path("$.a.b"): 2,
+        }
+
+        with pytest.raises(ValueError, match="leaf path"):
+            unwalk(snapshot)
+
+    def test_unwalk_rejects_setting_leaf_where_children_already_exist(self):
+        snapshot = {
+            Path("$.a.b"): 2,
+            Path("$.a"): 1,
+        }
+
+        with pytest.raises(ValueError, match="already has children"):
+            unwalk(snapshot)
+
 
 class TestDiffAndMerge:
     def test_diff_nested_reports_missing(self):
@@ -200,6 +243,12 @@ class TestDiffAndMerge:
         target = {"a": 1, "b": 2}
         deep_merge(target, {"b": MISSING})
         assert target == {"a": 1}
+
+    def test_diff_nested_compares_sequences_by_index(self):
+        diffs = diff_nested([1, {"a": 2}], [1, {"a": 3}, 4])
+
+        assert diffs[Path("$[1].a")] == (2, 3)
+        assert diffs[Path("$[2]")] == (MISSING, 4)
 
 
 class TestFirstKeys:

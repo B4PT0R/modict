@@ -1,5 +1,13 @@
 from __future__ import annotations
+import inspect
 from typing import Any, Callable, List, Literal
+
+
+def _validate_signature(func: Callable, expected_error: str, *sample_args: Any) -> None:
+    try:
+        inspect.signature(func).bind(*sample_args)
+    except TypeError as exc:
+        raise TypeError(expected_error) from exc
 
 class Validator:
     """Field-level validator/transformer.
@@ -17,17 +25,15 @@ class Validator:
         self.func = func
         self.field_name = field_name
         self.mode = mode
+        _validate_signature(
+            func,
+            f"Invalid validator signature for field '{field_name}'. Expected: (self, value)",
+            object(),
+            object(),
+        )
 
     def __call__(self, instance, value, *, values=None, cls=None, info=None):
-        try:
-            return self.func(instance, value)
-        except Exception as e:
-            if isinstance(e, TypeError):
-                raise TypeError(
-                    f"Invalid validator signature for field '{self.field_name}'. "
-                    "Expected: (self, value)"
-                ) from e
-            raise ValueError(f"Error in validator for field '{self.field_name}': {e}") from e
+        return self.func(instance, value)
 
 
 class ModelValidator:
@@ -39,13 +45,14 @@ class ModelValidator:
     def __init__(self, func: Callable, *, mode: Literal["before", "after"] = "after"):
         self.func = func
         self.mode = mode
+        _validate_signature(
+            func,
+            "Invalid model validator signature. Expected: (self, values)",
+            object(),
+            {},
+        )
 
     def __call__(self, instance, *, values=None, cls=None, info=None):
-        try:
-            if values is None and instance is not None:
-                values = dict(instance)
-            return self.func(instance, values)
-        except Exception as e:
-            if isinstance(e, TypeError):
-                raise TypeError("Invalid model validator signature. Expected: (self, values)") from e
-            raise ValueError(f"Error in model validator: {e}") from e
+        if values is None and instance is not None:
+            values = dict(instance)
+        return self.func(instance, values)

@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Set, Tuple, Union, Optional, Callable, TypeV
 
 import collections
 import collections.abc
+import types
 
 class CoercionError(Exception):
     """Exception raised when coercion is not possible."""
@@ -81,6 +82,9 @@ class Coercer:
         Coercion for Union, Optional, Literal, etc.
         Reuses TypeChecker analysis logic.
         """
+        if hasattr(types, "UnionType") and isinstance(target_hint, types.UnionType):
+            return self._coerce_union(value, target_hint)
+
         form_name = self.type_checker._get_special_form_name(target_hint)
         
         if form_name == 'Union':
@@ -237,21 +241,24 @@ class Coercer:
                 raise CoercionError(f"Cannot coerce string to {target_type}")
         elif hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
             # Convert iterable -> target type
-            if canonical_type == list:
-                converted = list(value)
-            elif canonical_type == tuple:
-                converted = tuple(value)
-            elif canonical_type == set:
-                converted = set(value)
-            else:
-                # For ABCs, try creating the canonical or origin type
-                try:
-                    converted = canonical_type(value)
-                except Exception:
+            try:
+                if canonical_type == list:
+                    converted = list(value)
+                elif canonical_type == tuple:
+                    converted = tuple(value)
+                elif canonical_type == set:
+                    converted = set(value)
+                else:
+                    # For ABCs, try creating the canonical or origin type
                     try:
-                        converted = origin(value)
+                        converted = canonical_type(value)
                     except Exception:
-                        converted = list(value)  # Fallback to list
+                        try:
+                            converted = origin(value)
+                        except Exception:
+                            converted = list(value)  # Fallback to list
+            except Exception as exc:
+                raise CoercionError(f"Cannot coerce {type(value)} to sequence") from exc
         else:
             raise CoercionError(f"Cannot coerce {type(value)} to sequence")
         
@@ -294,13 +301,16 @@ class Coercer:
         
         # Convert to a dict-like structure
         if hasattr(value, 'items'):
-            converted = dict(value.items())
+            try:
+                converted = dict(value.items())
+            except Exception as exc:
+                raise CoercionError(f"Cannot coerce {type(value)} to mapping") from exc
         elif hasattr(value, '__iter__'):
             # Try to convert from a sequence of pairs
             try:
                 converted = dict(value)
-            except (ValueError, TypeError):
-                raise CoercionError(f"Cannot coerce {type(value)} to mapping")
+            except Exception as exc:
+                raise CoercionError(f"Cannot coerce {type(value)} to mapping") from exc
         else:
             raise CoercionError(f"Cannot coerce {type(value)} to mapping")
         
@@ -378,7 +388,10 @@ class Coercer:
             converted = set(value)
         elif hasattr(value, '__iter__'):
             # Convert iterable -> set
-            converted = set(value)
+            try:
+                converted = set(value)
+            except Exception as exc:
+                raise CoercionError(f"Cannot coerce {type(value)} to set") from exc
         else:
             raise CoercionError(f"Cannot coerce {type(value)} to set")
         
@@ -422,7 +435,10 @@ class Coercer:
                     yield self.coerce(item, yield_type) if yield_type is not None else item
             return _iter()
 
-        converted = list(value)
+        try:
+            converted = list(value)
+        except Exception as exc:
+            raise CoercionError(f"Cannot coerce {type(value)} to iterable") from exc
 
         if args and len(args) == 1:
             elem_type = args[0]
@@ -494,7 +510,10 @@ class Coercer:
         if isinstance(value, str):
             converted = tuple(value)  # "abc" -> ('a', 'b', 'c')
         elif hasattr(value, '__iter__'):
-            converted = tuple(value)
+            try:
+                converted = tuple(value)
+            except Exception as exc:
+                raise CoercionError(f"Cannot coerce {type(value)} to tuple") from exc
         else:
             raise CoercionError(f"Cannot coerce {type(value)} to tuple")
         

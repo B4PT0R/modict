@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import MISSING as DC_MISSING
 from dataclasses import dataclass, field, fields
 from typing import Any, FrozenSet
@@ -95,7 +96,7 @@ class Config:
         for f in fields(type(self)):
             if not f.init or f.name == "_explicit":
                 continue
-            values[f.name] = getattr(self, f.name)
+            values[f.name] = copy.deepcopy(getattr(self, f.name))
         return type(self)._from_values(values, self._explicit)
 
     def merge(self, other):
@@ -105,9 +106,8 @@ class Config:
                 continue
             name = f.name
             if name in other._explicit:
-                merged_values[name] = getattr(other, name)
+                merged_values[name] = copy.deepcopy(getattr(other, name))
             else:
-                merged_values[name] = getattr(self, name)
+                merged_values[name] = copy.deepcopy(getattr(self, name))
         merged_explicit = self._explicit | other._explicit
         return type(self)._from_values(merged_values, merged_explicit)
-

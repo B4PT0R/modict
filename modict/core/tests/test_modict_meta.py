@@ -49,6 +49,31 @@ def test_modictconfig_copy_and_merge():
     assert merged._explicit == base._explicit | other._explicit
 
 
+def test_modictconfig_copy_and_merge_isolate_mutable_values():
+    base = modictConfig(json_encoders={int: str})
+
+    copy_cfg = base.copy()
+    copy_cfg.json_encoders[float] = repr
+    assert float not in base.json_encoders
+
+    merged = base.merge(modictConfig(strict=True))
+    merged.json_encoders[bytes] = bytes.hex
+    assert bytes not in base.json_encoders
+
+
+def test_instance_configs_do_not_share_mutable_fields():
+    class WithEncoders(modict):
+        _config = modict.config(json_encoders={int: str})
+
+    left = WithEncoders()
+    right = WithEncoders()
+
+    assert left._config.json_encoders is not right._config.json_encoders
+
+    left._config.json_encoders[float] = repr
+    assert float not in right._config.json_encoders
+
+
 def test_modict_views_reflect_mutations():
     m = modict(a=1, b=2)
     keys_view = m.keys()

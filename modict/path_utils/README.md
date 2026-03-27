@@ -11,12 +11,14 @@ Used internally by modict. The user-facing entry point is `from modict import Pa
 
 ## Construction
 
-`Path` accepts a JSONPath string, a tuple/list of keys, or another `Path`:
+`Path` accepts an absolute JSONPath string, a relative dotted path accepted by
+`jsonpath_ng`, a tuple/list of keys, or another `Path`:
 
 ```python
 from modict import Path
 
 p = Path("$.users[0].name")
+p = Path("users[0].name")
 p = Path(("users", 0, "name"))
 p = Path(["users", 0, "name"])
 ```
@@ -49,6 +51,9 @@ assert q.resolve() == "Grace"
 ```
 
 Note: `resolve(data)` caches container references in each node, enabling subsequent `resolve()` calls without re-passing the root. If you later try to resolve the same cached `Path` from a different root, a `ResolutionError` is raised. Use `invalidate()` or `set_root()` to reset.
+
+If you need strict absolute JSONPath validation, call `ensure_absolute(...)`
+before constructing the `Path`.
 
 ```python
 p.invalidate()        # clears all cached container references

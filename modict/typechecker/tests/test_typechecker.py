@@ -1,6 +1,7 @@
 """Basic coverage for the public typechecker/coercer utilities."""
 
 import pytest
+import modict.typechecker.src._public_api as public_api
 
 from typing import (
     TypedDict,
@@ -34,8 +35,10 @@ from typing import (
     NoReturn,
     Iterator as TypingIterator,
     Generator as TypingGenerator,
+    Final,
 )
 from collections import UserDict, UserList, deque
+import collections.abc
 
 from typechecker import (
     check_type,
@@ -62,6 +65,34 @@ def test_coerce_and_can_coerce():
     assert can_coerce("abc", int) is False
 
 
+def test_reset_global_typechecker_also_resets_global_coercer():
+    checker_before = public_api._get_global_typechecker()
+    coercer_before = public_api._get_global_coercer()
+
+    assert coercer_before.type_checker is checker_before
+
+    public_api.reset_global_typechecker()
+
+    checker_after = public_api._get_global_typechecker()
+    coercer_after = public_api._get_global_coercer()
+
+    assert checker_after is not checker_before
+    assert coercer_after is not coercer_before
+    assert coercer_after.type_checker is checker_after
+
+
+def test_reset_global_coercer_only_rebuilds_coercer_singleton():
+    checker_before = public_api._get_global_typechecker()
+    coercer_before = public_api._get_global_coercer()
+
+    public_api.reset_global_coercer()
+
+    coercer_after = public_api._get_global_coercer()
+
+    assert coercer_after is not coercer_before
+    assert coercer_after.type_checker is checker_before
+
+
 def test_typechecked_decorator_checks_args_and_return():
     @typechecked
     def add(a: int, b: int) -> int:
@@ -78,6 +109,31 @@ def test_typechecked_decorator_checks_args_and_return():
 
     with pytest.raises(TypeMismatchError):
         bad_return()
+
+
+def test_unannotated_callable_objects_are_left_untouched_by_decorators():
+    class PlainCallable:
+        def __call__(self, value):
+            return value
+
+    plain = PlainCallable()
+
+    assert typechecked(plain) is plain
+    assert coerced(plain) is plain
+
+
+def test_typechecked_decorator_handles_varargs_and_kwargs():
+    @typechecked
+    def collect(*values: int, **items: int) -> tuple[tuple[int, ...], dict[str, int]]:
+        return values, items
+
+    assert collect(1, 2, a=3) == ((1, 2), {"a": 3})
+
+    with pytest.raises(TypeMismatchError):
+        collect("x")  # type: ignore[arg-type]
+
+    with pytest.raises(TypeMismatchError):
+        collect(a="x")  # type: ignore[arg-type]
 
 
 def test_check_type_union_optional_literal():
@@ -250,6 +306,28 @@ def test_protocol_structural_methods_and_runtime_attrs_are_checked():
         check_type(RunnerProto, RunnerBadReturn())
 
 
+def test_protocol_property_annotations_are_checked_structurally():
+    @runtime_checkable
+    class HasName(Protocol):
+        @property
+        def name(self) -> str: ...
+
+    class Good:
+        @property
+        def name(self) -> str:
+            return "Ada"
+
+    class Bad:
+        @property
+        def name(self) -> int:
+            return 42
+
+    assert check_type(HasName, Good())
+
+    with pytest.raises(TypeMismatchError):
+        check_type(HasName, Bad())
+
+
 def test_check_type_callable_signature():
     def func(a: int, b: str) -> bool:
         return True
@@ -286,6 +364,25 @@ def test_check_type_callable_variance():
         check_type(Callable[[int], int], returns_object)
 
 
+def test_check_type_callable_with_ellipsis_checks_return_annotation_only():
+    from typing import Callable
+
+    def typed_return(x: int) -> str:
+        return str(x)
+
+    def wrong_return(x: int) -> int:
+        return x
+
+    def unannotated_return(x: int):
+        return str(x)
+
+    assert check_type(Callable[..., str], typed_return)
+    assert check_type(Callable[..., str], unannotated_return)
+
+    with pytest.raises(TypeMismatchError):
+        check_type(Callable[..., str], wrong_return)
+
+
 def test_check_type_newtype_and_annotated():
     UserId = NewType("UserId", int)
     assert check_type(UserId, UserId(1))
@@ -313,6 +410,7 @@ def test_coerce_nested_collections_and_unions():
     assert result == [1, 2]
     res2 = coerce("3", Union[int, str])
     assert res2 in (3, "3")
+    assert coerce("3", Union[str, int]) == "3"
 
     with pytest.raises(Exception):
         coerce("abc", int)
@@ -430,12 +528,32 @@ def test_coerce_handles_annotated_hint():
     assert coerce("5", Annotated[int, "meta"]) == 5
 
 
+def test_coerce_optional_final_and_typevars():
+    Constrained = TypeVar("Constrained", int, str)
+    Bound = TypeVar("Bound", bound=int)
+    coercer = public_api._get_global_coercer()
+
+    assert coerce(None, Optional[int]) is None
+    assert coerce("4", Final[int]) == 4
+    assert coerce("5", Constrained) == "5"
+    assert coerce("6", Bound) == 6
+    assert coercer._coerce_optional("3", Optional[int]) == 3
+
+
+def test_coerce_pep604_optional_behaves_like_optional():
+    assert coerce(None, int | None) is None
+    assert coerce("3", int | None) == 3
+
+
 def test_coerce_iterable_and_collection_materialize():
     iterable_res = coerce(("1", "2"), Iterable[int])
     assert iterable_res == (1, 2)
 
     collection_res = coerce({"1", "2"}, Collection[int])
     assert sorted(collection_res) == [1, 2]
+
+    container_res = coerce(["1", "2"], Container[int])
+    assert container_res == ["1", "2"]
 
 
 def test_coerce_newtype_and_typeddict():
@@ -490,6 +608,73 @@ def test_coerce_rejects_protocol_and_callable():
         coerce("not callable", Callable[[int], int])
 
 
+def test_coerce_tuple_variants_and_length_errors():
+    coercer = public_api._get_global_coercer()
+
+    assert coerce((), tuple[()]) == ()
+    assert coerce(["1", "2"], tuple[int, ...]) == (1, 2)
+    assert coerce(("1", 2), tuple[int, str]) == (1, "2")
+
+    with pytest.raises(public_api.CoercionError, match="Expected empty tuple"):
+        coercer._coerce_tuple_like((1,), tuple[()], tuple, ((),))
+
+    with pytest.raises(CoercionError, match="Expected tuple of length 3"):
+        coerce((1, 2), tuple[int, str, bool])
+
+
+def test_coerce_scalar_helpers_cover_edge_cases():
+    coercer = public_api._get_global_coercer()
+
+    assert coerce("123.0", int) == 123
+    assert coerce(" YES ", bool) is True
+    assert coerce("off", bool) is False
+    assert coerce(3.0, int) == 3
+
+    with pytest.raises(public_api.CoercionError, match="non-integer float"):
+        coercer._str_to_int("123.4")
+
+    with pytest.raises(public_api.CoercionError, match="Empty string"):
+        coercer._str_to_int("   ")
+
+    with pytest.raises(public_api.CoercionError, match="Empty string"):
+        coercer._str_to_float("   ")
+
+    with pytest.raises(public_api.CoercionError, match="Cannot convert 'maybe' to bool"):
+        coercer._str_to_bool("maybe")
+
+    with pytest.raises(public_api.CoercionError, match="decimal part"):
+        coercer._float_to_int(3.5)
+
+
+def test_coerce_string_sequences_and_forward_ref_failures():
+    assert coerce("ab", list[str]) == ["a", "b"]
+    assert coerce("ab", tuple[str, ...]) == ("a", "b")
+
+    with pytest.raises(CoercionError, match="Cannot coerce string"):
+        coerce("ab", Deque[str])
+
+    with pytest.raises(CoercionError, match="Cannot resolve forward reference"):
+        coerce(1, "DefinitelyMissingType")
+
+
+def test_hostile_iterables_and_mappings_raise_coercionerror_instead_of_leaking():
+    class BadIterable:
+        def __iter__(self):
+            raise RuntimeError("boom iter")
+
+    class BadMapping:
+        def items(self):
+            raise RuntimeError("boom items")
+
+    with pytest.raises(CoercionError, match="Cannot coerce .* to sequence"):
+        coerce(BadIterable(), list[int])
+
+    with pytest.raises(CoercionError, match="Cannot coerce .* to mapping"):
+        coerce(BadMapping(), dict[str, int])
+
+    assert can_coerce(BadIterable(), list[int]) is False
+
+
 def test_coerced_decorator_coerces_args_and_return():
     @coerced
     def add(a: int, b: int) -> int:
@@ -511,12 +696,32 @@ def test_coerced_decorator_coerces_args_and_return():
         no_coercion_on_failure("abc")
 
 
+def test_coerced_decorator_skips_unannotated_parameters():
+    @coerced
+    def mix(a: int, b, *, c: int) -> tuple[int, object, int]:
+        return a, b, c
+
+    assert mix("1", "kept", c="2") == (1, "kept", 2)
+
+
 def test_coerced_decorator_handles_varargs_kwargs():
     @coerced
     def collect(*values: int, **items: int) -> list[int]:
         return list(values) + list(items.values())
 
     assert collect("1", "2", a="3", b=4) == [1, 2, 3, 4]
+
+
+def test_coerced_decorator_rejects_invalid_varargs_and_kwargs_after_failed_coercion():
+    @coerced
+    def collect(*values: int, **items: int) -> list[int]:
+        return list(values) + list(items.values())
+
+    with pytest.raises(TypeMismatchError):
+        collect("bad")
+
+    with pytest.raises(TypeMismatchError):
+        collect(a="bad")
 
 
 def test_coerce_preserves_container_type_when_elements_change():
@@ -574,3 +779,170 @@ def test_generic_instance_uses_runtime_type_arguments_when_available():
     assert check_type(Box[int], Box[int](1))
     with pytest.raises(TypeMismatchError):
         check_type(Box[int], Box[str]("x"))
+
+
+def test_generic_inheritance_substitutes_typevars_from_orig_bases():
+    T = TypeVar("T")
+    U = TypeVar("U")
+    V = TypeVar("V")
+
+    class MultiBox(Generic[T, U, V]):
+        first: T
+        second: U
+        third: V
+
+        def __init__(self, first: T, second: U, third: V):
+            self.first = first
+            self.second = second
+            self.third = third
+
+    class SubBox(MultiBox[T, str, bool], Generic[T]):
+        pass
+
+    assert check_type(SubBox[int], SubBox(1, "ok", True))
+
+    with pytest.raises(TypeMismatchError):
+        check_type(SubBox[int], SubBox("1", "ok", True))
+
+    with pytest.raises(TypeMismatchError):
+        check_type(SubBox[int], SubBox(1, 2, True))
+
+
+def test_custom_generic_sequence_uses_abc_checker_paths():
+    T = TypeVar("T")
+
+    class FrozenSeq(collections.abc.Sequence, Generic[T]):
+        def __init__(self, values):
+            self._values = tuple(values)
+
+        def __getitem__(self, index):
+            return self._values[index]
+
+        def __len__(self):
+            return len(self._values)
+
+    value = FrozenSeq([1, 2, 3])
+
+    assert check_type(FrozenSeq[int], value)
+    with pytest.raises(TypeMismatchError):
+        check_type(FrozenSeq[str], value)
+
+
+def test_typechecked_decorator_false_result_branches_raise_clear_errors(monkeypatch):
+    class FakeChecker:
+        def check_type(self, hint, value):
+            return False
+
+    monkeypatch.setattr(public_api, "_get_global_typechecker", lambda: FakeChecker())
+
+    @public_api.typechecked
+    def takes_one(a: int) -> int:
+        return a
+
+    @public_api.typechecked
+    def takes_many(*values: int) -> int:
+        return len(values)
+
+    @public_api.typechecked
+    def takes_kwargs(**items: int) -> int:
+        return len(items)
+
+    @public_api.typechecked
+    def bad_return() -> int:
+        return 1
+
+    with pytest.raises(public_api.TypeMismatchError, match="Argument 'a' has invalid type"):
+        takes_one(1)
+
+    with pytest.raises(public_api.TypeMismatchError, match="Argument 'values' has invalid item"):
+        takes_many(1)
+
+    with pytest.raises(public_api.TypeMismatchError, match="Argument 'items\\[a\\]' has invalid type"):
+        takes_kwargs(a=1)
+
+    with pytest.raises(public_api.TypeMismatchError, match="Return value has invalid type"):
+        bad_return()
+
+
+def test_coerced_decorator_false_result_branches_raise_clear_errors(monkeypatch):
+    class FakeCoercer:
+        def coerce(self, value, hint):
+            raise public_api.CoercionError("nope")
+
+    class FakeChecker:
+        def check_type(self, hint, value):
+            return False
+
+    monkeypatch.setattr(public_api, "_get_global_coercer", lambda: FakeCoercer())
+    monkeypatch.setattr(public_api, "_get_global_typechecker", lambda: FakeChecker())
+
+    @public_api.coerced
+    def takes_one(a: int) -> int:
+        return a
+
+    @public_api.coerced
+    def takes_many(*values: int) -> int:
+        return len(values)
+
+    @public_api.coerced
+    def takes_kwargs(**items: int) -> int:
+        return len(items)
+
+    @public_api.coerced
+    def bad_return() -> int:
+        return "x"
+
+    with pytest.raises(public_api.TypeMismatchError, match="Argument 'a' has invalid type"):
+        takes_one(1)
+
+    with pytest.raises(public_api.TypeMismatchError, match="Argument 'values' has invalid item"):
+        takes_many(1)
+
+    with pytest.raises(public_api.TypeMismatchError, match="Argument 'items\\[a\\]' has invalid type"):
+        takes_kwargs(a=1)
+
+    with pytest.raises(public_api.TypeMismatchError, match="Return value has invalid type"):
+        bad_return()
+
+
+def test_coercer_private_error_paths_and_fallbacks():
+    coercer = public_api._get_global_coercer()
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce to special form"):
+        original = coercer.type_checker._get_special_form_name
+        coercer.type_checker._get_special_form_name = lambda hint: "Weird"
+        try:
+            coercer._coerce_special_form("x", object())
+        finally:
+            coercer.type_checker._get_special_form_name = original
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce .* any type in"):
+        coercer._coerce_union(object(), Union[bytes, complex])
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce .* to mapping"):
+        coercer._coerce_mapping_like(object(), dict[str, int], dict, (str, int))
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce .* to TypedDict"):
+        class Payload(TypedDict):
+            name: str
+
+        coercer._coerce_typeddict(object(), Payload)
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce .* to container"):
+        coercer._coerce_container_like(1, Container[int], collections.abc.Container, (int,))
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce .* to iterator"):
+        coercer._coerce_iterator_like(1, TypingIterator[int], collections.abc.Iterator, (int,))
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce .* to <class 'int'>"):
+        coercer._generic_basic_coercion(object(), int)
+
+    with pytest.raises(public_api.CoercionError, match="Cannot coerce .* any literal value"):
+        coercer._coerce_literal("x", Literal[1, 2])
+
+    with pytest.raises(public_api.CoercionError, match="Cannot convert 'abc' to float"):
+        coercer._str_to_float("abc")
+
+    Unreachable = TypeVar("Unreachable", bytes, complex)
+    with pytest.raises(public_api.CoercionError, match="any constraint"):
+        coercer._coerce_typevar(object(), Unreachable)

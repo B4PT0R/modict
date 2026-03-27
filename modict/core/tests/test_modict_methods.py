@@ -260,6 +260,18 @@ class TestDeepcopy:
         assert c is not m
         assert c["self"] is c
 
+    def test_deepcopy_preserves_shared_alias_topology(self):
+        shared = modict(value=1)
+        m = modict(left=shared, right=shared)
+
+        c = m.deepcopy()
+
+        assert c is not m
+        assert c["left"] is c["right"]
+        assert c["left"] is not shared
+        c["left"]["value"] = 2
+        assert m["left"]["value"] == 1
+
     def test_deepcopy_preserves_instance_config(self):
         m = modict(a=1)
         m._config.strict = True
@@ -401,12 +413,39 @@ class TestConversion:
         assert not isinstance(d["a"], modict)
         assert d["a"]["b"] == 1
 
+    def test_to_dict_mutates_nested_containers_in_place(self):
+        child = modict(b=1)
+        nested_list = [child]
+        m = modict(a=nested_list)
+
+        d = m.to_dict()
+
+        assert d == {"a": [{"b": 1}]}
+        assert d["a"] is nested_list
+        assert nested_list[0] is not child
+        assert isinstance(nested_list[0], dict)
+        assert not isinstance(nested_list[0], modict)
+
     def test_to_modict_converts_nested(self):
         m = modict.__new__(modict)
         dict.__init__(m)
         dict.__setitem__(m, "a", {"b": 1})  # raw nested dict
         m.to_modict()
         assert isinstance(m["a"], modict)
+
+    def test_to_modict_mutates_nested_containers_in_place(self):
+        child = {"b": 1}
+        nested_list = [child]
+        m = modict.__new__(modict)
+        dict.__init__(m)
+        dict.__setitem__(m, "a", nested_list)
+
+        converted = m.to_modict()
+
+        assert converted is m
+        assert dict.__getitem__(m, "a") is nested_list
+        assert nested_list[0] is not child
+        assert isinstance(nested_list[0], modict)
 
     def test_convert_classmethod(self):
         d = {"a": {"b": 1}, "c": [{"d": 2}]}
@@ -415,8 +454,58 @@ class TestConversion:
         assert isinstance(m["a"], modict)
         assert isinstance(m["c"][0], modict)
 
+    def test_convert_mutates_nested_containers_in_place(self):
+        child = {"b": 1}
+        nested_list = [child]
+        data = {"a": nested_list}
+
+        m = modict.convert(data)
+
+        assert isinstance(m, modict)
+        assert m["a"] is nested_list
+        assert nested_list[0] is not child
+        assert isinstance(nested_list[0], modict)
+
+    def test_convert_preserves_shared_references_and_cycles(self):
+        shared = {"value": 1}
+        data = {"left": shared, "right": shared}
+        data["self"] = data
+
+        converted = modict.convert(data)
+
+        assert isinstance(converted, modict)
+        assert converted["left"] is converted["right"]
+        assert converted["self"] is converted
+        assert isinstance(converted["left"], modict)
+
     def test_unconvert_classmethod(self):
         m = modict(a=modict(b=1))
         d = modict.unconvert(m)
         assert not isinstance(d, modict)
         assert not isinstance(d["a"], modict)
+
+    def test_unconvert_mutates_nested_containers_in_place(self):
+        child = modict(b=1)
+        nested_list = [child]
+        m = modict(a=nested_list)
+
+        d = modict.unconvert(m)
+
+        assert d == {"a": [{"b": 1}]}
+        assert d["a"] is nested_list
+        assert nested_list[0] is not child
+        assert isinstance(nested_list[0], dict)
+        assert not isinstance(nested_list[0], modict)
+
+    def test_unconvert_preserves_shared_references_and_cycles(self):
+        shared = modict(value=1)
+        m = modict(left=shared, right=shared)
+        m["self"] = m
+
+        plain = modict.unconvert(m)
+
+        assert isinstance(plain, dict)
+        assert plain["left"] is plain["right"]
+        assert plain["self"] is plain
+        assert isinstance(plain["left"], dict)
+        assert not isinstance(plain["left"], modict)

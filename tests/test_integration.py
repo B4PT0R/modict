@@ -125,6 +125,36 @@ def test_model_validator_and_computed_together():
         Rectangle(width=-1.0, height=4.0)
 
 
+def test_after_model_validator_respects_extra_policy():
+    class StrictModel(md):
+        _config = md.config(extra="forbid")
+        x: int
+
+        @md.model_validator(mode="after")
+        def inject_extra(self, values):
+            return {"x": values["x"], "oops": 2}
+
+    with pytest.raises(KeyError):
+        StrictModel(x=1)
+
+
+def test_after_model_validator_invalidates_computed_dependants():
+    class Model(md):
+        a: int
+
+        @md.computed(cache=True, deps=["a"])
+        def doubled(self):
+            return self.a * 2
+
+        @md.model_validator(mode="after")
+        def bump(self, values):
+            return {"a": values["a"] + 1}
+
+    m = Model(a=1)
+    assert m.a == 2
+    assert m.doubled == 4
+
+
 def test_validate_assignment_default_true():
     """By default, assignment re-runs the full pipeline (coercion + validators + computed)."""
     class Model(md):
@@ -160,6 +190,50 @@ def test_validate_assignment_false_bypasses_pipeline():
 
     m.raw = -3          # bypass: validator NOT called, value stored as-is
     assert m.raw == -3
+
+
+def test_validator_runtime_typeerror_is_not_rewritten_as_signature_error():
+    class Model(md):
+        x: int
+
+        @md.validator("x")
+        def fail(self, value):
+            raise TypeError("bad value type")
+
+    with pytest.raises(TypeError, match="bad value type"):
+        Model(x=1)
+
+
+def test_invalid_validator_signature_is_rejected_at_class_definition():
+    with pytest.raises(TypeError, match="Invalid validator signature"):
+        class Model(md):
+            x: int
+
+            @md.validator("x")
+            def fail(self):
+                return 1
+
+
+def test_model_validator_runtime_typeerror_is_not_rewritten_as_signature_error():
+    class Model(md):
+        x: int
+
+        @md.model_validator(mode="after")
+        def fail(self, values):
+            raise TypeError("bad invariant")
+
+    with pytest.raises(TypeError, match="bad invariant"):
+        Model(x=1)
+
+
+def test_invalid_model_validator_signature_is_rejected_at_class_definition():
+    with pytest.raises(TypeError, match="Invalid model validator signature"):
+        class Model(md):
+            x: int
+
+            @md.model_validator(mode="after")
+            def fail(self):
+                return None
 
 
 # ---------------------------------------------------------------------------

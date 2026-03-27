@@ -472,10 +472,15 @@ class modict(dict, metaclass=modictMeta):
                     dict.clear(self)
                     dict.update(self, result)
                 else:
-                    # Apply updates and validate updated fields immediately.
+                    # Apply updates through the normal assignment policy so key
+                    # constraints, computed protection, and cache invalidation
+                    # remain consistent even when validate_assignment=False.
                     for key, value in result.items():
-                        checked = self._check_value(key, value)
-                        dict.__setitem__(self, key, checked)
+                        self._store_item(
+                            key,
+                            value,
+                            validate_value=self._check_values_enabled(),
+                        )
                 continue
             raise TypeError(
                 f"model_validator must return None, self, or a Mapping; got {type(result).__name__}"
@@ -648,6 +653,65 @@ class modict(dict, metaclass=modictMeta):
             return new
         return value
 
+    def _check_mutable(self, action: Literal["assign", "delete", "clear"], key=None) -> None:
+        if not self._config.frozen:
+            return
+
+        if action == "assign":
+            raise TypeError(
+                f"Cannot assign to field '{key}': instance is frozen (immutable). "
+                f"Set frozen=False in config to allow modifications."
+            )
+        if action == "delete":
+            raise TypeError(
+                f"Cannot delete field '{key}': instance is frozen (immutable). "
+                f"Set frozen=False in config to allow modifications."
+            )
+        raise TypeError(
+            "Cannot clear instance: it is frozen (immutable). "
+            "Set frozen=False in config to allow modifications."
+        )
+
+    def _enforce_assignment_policy(self, key, value) -> bool:
+        # Prevent accidental overwrites of computed fields unless explicitly allowed.
+        # This is a key-level constraint, controlled by check_keys.
+        if self._check_keys_enabled():
+            existing = dict.get(self, key, MISSING)
+            if isinstance(existing, Computed) and not getattr(self._config, "override_computed", False):
+                raise TypeError(f"Cannot override computed field '{key}' (override_computed=False)")
+
+        if self._check_keys_enabled():
+            # Handle extra keys based on config
+            if key not in self.__fields__:
+                if self._config.extra == 'forbid':
+                    raise KeyError(
+                        f"Key {key!r} is not allowed. Only the following keys are permitted: "
+                        f"{list(self.__fields__.keys())}"
+                    )
+                elif self._config.extra == 'ignore':
+                    # Silently ignore: don't store, just return
+                    return False
+                # extra == 'allow': continue with storage
+        return True
+
+    def _store_item(self, key, value, *, validate_value: bool) -> None:
+        self._check_mutable("assign", key=key)
+        should_store = self._enforce_assignment_policy(key, value)
+        if not should_store:
+            return
+
+        # Computed objects are stored raw — no validation, but they still
+        # replace the logical value behind this key and must invalidate dependants.
+        if isinstance(value, Computed):
+            dict.__setitem__(self, key, value)
+            self._invalidate_dependants({key})
+            return
+
+        if validate_value:
+            value = self._check_value(key, value)
+        dict.__setitem__(self, key, value)
+        self._invalidate_dependants({key})
+
     # changed dict methods
 
     def keys(self):
@@ -689,51 +753,14 @@ class modict(dict, metaclass=modictMeta):
         return self._auto_convert_and_store(key, value)
 
     def __setitem__(self, key, value):
-        # Check if frozen
-        if self._config.frozen:
-            raise TypeError(
-                f"Cannot assign to field '{key}': instance is frozen (immutable). "
-                f"Set frozen=False in config to allow modifications."
-            )
-
-        # Prevent accidental overwrites of computed fields unless explicitly allowed.
-        # This is a key-level constraint, controlled by check_keys.
-        if self._check_keys_enabled() and not isinstance(value, Computed):
-            existing = dict.get(self, key, MISSING)
-            if isinstance(existing, Computed) and not getattr(self._config, "override_computed", False):
-                raise TypeError(f"Cannot override computed field '{key}' (override_computed=False)")
-
-        if self._check_keys_enabled():
-            # Handle extra keys based on config
-            if key not in self.__fields__:
-                if self._config.extra == 'forbid':
-                    raise KeyError(
-                        f"Key {key!r} is not allowed. Only the following keys are permitted: "
-                        f"{list(self.__fields__.keys())}"
-                    )
-                elif self._config.extra == 'ignore':
-                    # Silently ignore: don't store, just return
-                    return
-                # extra == 'allow': continue with storage
-
-        # Computed objects are stored raw — no validation or invalidation
-        if isinstance(value, Computed):
-            dict.__setitem__(self, key, value)
-            return
-
-        # Normal assignment: run validation pipeline if enabled
-        if self._check_values_enabled() and self._config.validate_assignment:
-            value = self._check_value(key, value)
-        dict.__setitem__(self, key, value)
-        self._invalidate_dependants({key})
+        self._store_item(
+            key,
+            value,
+            validate_value=self._check_values_enabled() and self._config.validate_assignment,
+        )
 
     def __delitem__(self, key):
-        # Check if frozen
-        if self._config.frozen:
-            raise TypeError(
-                f"Cannot delete field '{key}': instance is frozen (immutable). "
-                f"Set frozen=False in config to allow modifications."
-            )
+        self._check_mutable("delete", key=key)
         if self._check_keys_enabled():
             # If require_all=True, declared fields must always be present.
             if bool(getattr(self._config, "require_all", False)) and key in getattr(self, "__fields__", {}):
@@ -877,7 +904,13 @@ class modict(dict, metaclass=modictMeta):
         if not isinstance(other, Mapping):
             return NotImplemented
         result = self.copy()
-        result.update(other)
+        was_frozen = bool(getattr(result._config, "frozen", False))
+        if was_frozen:
+            result._config.frozen = False
+        try:
+            result.update(other)
+        finally:
+            result._config.frozen = was_frozen
         return result
 
     def __ior__(self, other):
@@ -922,12 +955,19 @@ class modict(dict, metaclass=modictMeta):
             return self[key]
 
     def clear(self):
+        self._check_mutable("clear")
         if (
             self._check_keys_enabled()
             and bool(getattr(self._config, "require_all", False))
             and getattr(self, "__fields__", None)
         ):
             raise TypeError("Cannot clear a model with require_all=True")
+        if (
+            self._check_keys_enabled()
+            and not getattr(self._config, "override_computed", False)
+            and any(isinstance(value, Computed) for value in dict.values(self))
+        ):
+            raise TypeError("Cannot clear computed fields (override_computed=False)")
         dict.clear(self)
         self._invalidate_all()
 
@@ -1049,7 +1089,12 @@ class modict(dict, metaclass=modictMeta):
         # then we recursively convert the values
         if is_mutable_container(obj):
             # We convert in situ to preserve references of original containers as much as possible
-            for k, v in unroll(obj):
+            if isinstance(obj, modict):
+                # Use raw dict iteration to avoid re-entering __getitem__ during conversion.
+                items = dict.items(obj)
+            else:
+                items = unroll(obj)
+            for k, v in items:
                 if isinstance(obj, modict):
                     dict.__setitem__(obj, k, cls.convert(v, seen, root=False, recurse=recurse))
                 else:
@@ -1105,7 +1150,12 @@ class modict(dict, metaclass=modictMeta):
 
         if is_mutable_container(obj):
             # We unconvert in situ to preserve references of original containers as much as possible
-            for k, v in unroll(obj):
+            if isinstance(obj, modict):
+                # Read raw stored values so unconversion does not evaluate computed or auto-convert again.
+                items = dict.items(obj)
+            else:
+                items = unroll(obj)
+            for k, v in items:
                 obj[k] = cls.unconvert(v, seen)
 
         return obj

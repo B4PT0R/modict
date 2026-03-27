@@ -37,8 +37,11 @@ def reset_global_typechecker():
 
     Mostly useful in tests or when forcing a clean reinitialization.
     """
-    global _global_typechecker
+    global _global_typechecker, _global_coercer
     _global_typechecker = None
+    # Keep the helper singletons consistent: the coercer embeds a reference
+    # to the current global type checker instance.
+    _global_coercer = None
 
 def reset_global_coercer():
     """

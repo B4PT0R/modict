@@ -38,6 +38,12 @@ class TestDeepMerge:
         deep_merge(target, src)
         assert target == {"items": [{"a": 10}, {"b": 20, "c": 30}]}
 
+    def test_merge_list_rejects_text_like_sequences(self):
+        for src in ("ab", b"ab", bytearray(b"ab")):
+            target = [1, 2, 3]
+            with pytest.raises(TypeError):
+                deep_merge(target, src)
+
 
 class TestDeepMergeWithMISSING:
     def test_delete_key_with_missing(self):
@@ -109,4 +115,3 @@ class TestUnwalkIgnoreTypes:
         result_without_types = unwalk(walked, ignore_types=True)
         assert "x" in result_without_types
         assert isinstance(result_without_types, dict)
-

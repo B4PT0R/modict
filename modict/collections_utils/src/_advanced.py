@@ -47,7 +47,8 @@ Type Definitions:
     - MutableContainer: Union[MutableMapping, MutableSequence] - Mutable containers
 
 Notes:
-    - JSONPath strings must start with '$' (e.g., "$.a.b[0].c")
+    - Path strings may be absolute JSONPath (e.g., "$.a.b[0].c") or a relative
+      dotted form accepted by `Path(...)` (e.g., "a.b[0].c")
     - Tuple paths are ambiguous for integer keys and converted to Path objects
     - Path objects can carry Mapping/Sequence interface hints (used by `unwalk()`)
     - Reconstruction helpers rebuild structural `dict` / `list` containers unless a higher-level model recasts the result
@@ -331,6 +332,10 @@ def exclude(obj: Container, *excluded_keys: Key) -> Iterator[Tuple[Key, Any]]:
 
 CallbackFn = Callable[[Any], Any]
 
+
+def _is_deep_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
 def walk(
     obj: Container,
     callback: Optional[CallbackFn] = None,
@@ -361,8 +366,14 @@ def walk(
         [(Path($.a[0]), '1'), (Path($.a[1].b), '2'), (Path($.c), '3')]
     """
 
+    seen_container_ids: set[int] = set()
+
     def _walk(obj: Any, path: Path) -> Iterator[Tuple[Path, Any]]:
         if is_container(obj, excluded=excluded):
+            container_id = id(obj)
+            if container_id in seen_container_ids:
+                return
+            seen_container_ids.add(container_id)
             for k, v in unroll(obj):
                 # Add key to path
                 new_path = path.child(k)
@@ -755,7 +766,7 @@ def deep_merge(target, src, conflict_resolver: Optional[Callable[[Any, Any], Any
         for key in keys_to_delete:
             del target[key]
 
-    elif isinstance(target, MutableSequence) and isinstance(src, Sequence):
+    elif isinstance(target, MutableSequence) and _is_deep_sequence(target) and _is_deep_sequence(src):
         # For sequences, we need to handle deletions carefully
         # We collect indices to delete and process them in reverse order
         indices_to_delete = []

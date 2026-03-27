@@ -492,6 +492,20 @@ class TestMergeOperators:
         result = m.__or__(42)
         assert result is NotImplemented
 
+    def test_or_on_frozen_instance_returns_new_value(self):
+        class Frozen(modict):
+            _config = modict.config(frozen=True)
+            a: int = 1
+
+        original = Frozen()
+        merged = original | {"b": 2}
+
+        assert isinstance(merged, Frozen)
+        assert merged == {"a": 1, "b": 2}
+        assert original == {"a": 1}
+        with pytest.raises(TypeError, match="frozen"):
+            merged["c"] = 3
+
 
 # ---------------------------------------------------------------------------
 # __reversed__

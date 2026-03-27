@@ -341,6 +341,8 @@ def test_computed_override_is_blocked_by_default():
     with pytest.raises(TypeError):
         m["sum"] = 123
     with pytest.raises(TypeError):
+        m["sum"] = modict.computed(lambda self: self.a * self.b)
+    with pytest.raises(TypeError):
         del m["sum"]
 
 
@@ -489,6 +491,34 @@ def test_require_all_prevents_clear_and_translate_stays_safe():
     assert m.a == 1
     assert m.extra == 123
 
+
+def test_clear_respects_frozen_and_computed_protection():
+    class Frozen(modict):
+        _config = modict.config(frozen=True)
+        a: int = 1
+
+    frozen = Frozen()
+    with pytest.raises(TypeError, match="frozen"):
+        frozen.clear()
+
+    protected = modict({"a": 1})
+    protected["sum"] = modict.computed(lambda self: self.a + 1)
+    with pytest.raises(TypeError, match="override_computed=False"):
+        protected.clear()
+
+
+def test_replacing_computed_invalidates_dependants_when_allowed():
+    m = modict({"a": 1})
+    m["sum"] = modict.computed(lambda self: self.a + 1, cache=True, deps=["a"])
+    m["double"] = modict.computed(lambda self: self.sum * 2, cache=True, deps=["sum"])
+
+    assert m.double == 4
+
+    m._config.override_computed = True
+    m["sum"] = modict.computed(lambda self: self.a + 10, cache=True, deps=["a"])
+
+    assert m.double == 22
+
 def test_manual_invalidate_computed_cascades_to_dependants():
     calls = {"sum": 0, "double": 0}
 
@@ -518,6 +548,32 @@ def test_manual_invalidate_computed_cascades_to_dependants():
     assert m.double == 24
     assert calls["sum"] == 2
     assert calls["double"] == 2
+
+
+def test_manual_invalidate_computed_after_external_nested_mutation():
+    calls = {"n": 0}
+
+    class Bag(modict):
+        items: list[int]
+
+        @modict.computed(cache=True, deps=[])
+        def total(self):
+            calls["n"] += 1
+            return sum(self["items"])
+
+    bag = Bag(items=[1, 2, 3])
+
+    assert bag.total == 6
+    assert bag.total == 6
+    assert calls["n"] == 1
+
+    bag["items"].append(4)  # external deep mutation; no assignment hook triggered
+    assert bag.total == 6
+    assert calls["n"] == 1
+
+    bag.invalidate_computed("total")
+    assert bag.total == 10
+    assert calls["n"] == 2
 
 
 def test_validator_mode_after_runs_after_coercion_and_typecheck():

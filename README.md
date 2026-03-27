@@ -103,6 +103,9 @@ You can target nested values using:
 - **Tuples** of keys/indices: `("users", 0, "name")`
 - **`Path` objects**: `Path("$.users[0].name")`
 
+`Path(...)` also accepts relative dotted strings such as `users[0].name` and
+normalizes them back to the absolute JSONPath form in `str(path)`.
+
 ### The `Path` object
 
 `Path` is a parsed, strongly-typed representation of a nested path.
@@ -111,6 +114,7 @@ You can target nested values using:
 from modict import Path
 
 p = Path("$.users[0].name")
+p = Path("users[0].name")
 assert tuple(p) == ("users", 0, "name")
 assert str(p) == "$.users[0].name"      # __str__ renders back to JSONPath
 assert repr(p) == "Path($.users[0].name)"

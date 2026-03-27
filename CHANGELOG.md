@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.3
+
+### Fixed
+- `clear()` now respects `frozen=True` and computed-field protection invariants
+- Replacing a computed field now invalidates dependant computed caches consistently, and `after` model validators no longer bypass assignment/key policies
+- `Config.copy()` / `Config.merge()` now isolate mutable config payloads such as `json_encoders`
+- `reset_global_typechecker()` now resets the global coercer too, keeping the public helper singletons in sync
+- `Path.__radd__()` now treats `str` / `int` as single path keys, and `PathNode` reports stable errors for invalid containers
+- `walk()` is now cycle-safe, and `deep_merge()` no longer treats `str` / `bytes` / `bytearray` as mergeable deep sequences
+- `modict.__or__()` now works correctly on frozen instances without mutating the source object
+- `convert()` / `unconvert()` now handle self-referential structures safely while preserving the intended in-place container semantics
+- `coerce()` now handles PEP 604 optionals like `int | None`, and hostile iterables/mappings now fail with `CoercionError` instead of leaking raw runtime exceptions
+
+### Changed
+- Validator and model-validator signature errors are now detected at registration time, while runtime `TypeError`s raised inside validator bodies are preserved as-is
+- Documentation now explicitly reflects the accepted relative `Path(...)` string forms
+
+### Tests
+- Expanded regression and edge-case coverage across `core`, `path_utils`, `collections_utils`, `model_api`, and `typechecker`, including cycles, alias preservation, hostile coercion inputs, and `from_attributes` failure modes
+
 ## 0.4.2
 
 ### Removed

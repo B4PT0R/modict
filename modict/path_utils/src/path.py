@@ -120,7 +120,9 @@ class PathNode:
         self.key = key
         # Validate that if container is provided, it's actually a container or MISSING
         if container is not MISSING:
-            if not isinstance(container, (Mapping, Sequence)) and not (hasattr(container, '__getitem__') or hasattr(container, key)):
+            has_item_access = hasattr(container, "__getitem__")
+            has_attr_access = isinstance(key, str) and hasattr(container, key)
+            if not isinstance(container, (Mapping, Sequence)) and not (has_item_access or has_attr_access):
                 raise TypeError(f"PathNode container must be a Mapping, Sequence, or object with attribute access, got {type(container).__name__}")
         self.container = container
         self.parent_node = parent_node
@@ -443,10 +445,15 @@ class Path:
         return Path._from_nodes(nodes, root=self.root)
 
     def __radd__(self, other: Any) -> Path:
-        try:
-            left_keys = tuple(other)
-        except TypeError:
-            return NotImplemented
+        if isinstance(other, Path):
+            left_keys: tuple[PathKey, ...] = tuple(other)
+        elif isinstance(other, (str, int)):
+            left_keys = (other,)  # type: ignore[assignment]
+        else:
+            try:
+                left_keys = tuple(other)
+            except TypeError:
+                return NotImplemented
         return Path(left_keys + tuple(self), root=self.root)
 
     def __getitem__(self, key: PathKey | slice) -> Path:

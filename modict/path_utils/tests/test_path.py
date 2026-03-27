@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from path_utils import Path, PathNode, find_paths
+from path_utils import Path, PathNode, ensure_absolute, find_paths
 from path_utils.src.path import ResolutionError
 
 
@@ -29,6 +29,13 @@ def test_bind_accepts_jsonpath_string():
     path = Path("$.users[0].name", root=data)
     assert tuple(path) == ("users", 0, "name")
     assert path.resolve() == "Ada"
+
+
+def test_bind_accepts_relative_dotted_path_string():
+    data = {"users": [{"name": "Ada"}, {"name": "Grace"}]}
+    path = Path("users[1].name", root=data)
+    assert tuple(path) == ("users", 1, "name")
+    assert path.resolve() == "Grace"
 
 
 def test_bind_without_keys_is_root_path():
@@ -59,6 +66,16 @@ def test_parent_and_child_roundtrip():
     assert parent.child("name").resolve() == "Ada"
 
 
+def test_parent_handles_zero_negative_and_overflow_levels():
+    path = Path(("users", 0, "name"))
+
+    assert path.parent(0) is path
+    assert tuple(path.parent(10)) == ()
+
+    with pytest.raises(ValueError, match="levels must be >= 0"):
+        path.parent(-1)
+
+
 def test_path_prefix_slice_preserves_binding():
     data = {"users": [{"name": "Ada"}]}
     path = Path(["users", 0, "name"], root=data)
@@ -79,6 +96,16 @@ def test_path_suffix_slice_preserves_cached_containers():
     assert suffix.resolve() == "Ada"
 
 
+def test_empty_slices_preserve_root_only_for_prefixes():
+    data = {"users": [{"name": "Ada"}]}
+    path = Path(["users", 0, "name"], root=data)
+
+    assert path[:0].resolve() is data
+
+    with pytest.raises(ResolutionError):
+        path[3:].resolve()
+
+
 def test_set_and_delete_inplace_dict():
     data = {"a": {"b": 1}}
     path = Path(["a", "b"], root=data)
@@ -86,6 +113,16 @@ def test_set_and_delete_inplace_dict():
     assert data["a"]["b"] == 2
     path.delete_inplace()
     assert "b" not in data["a"]
+
+
+def test_empty_path_set_and_delete_raise_value_error():
+    path = Path()
+
+    with pytest.raises(ValueError, match="empty Path"):
+        path.set_inplace(1)
+
+    with pytest.raises(ValueError, match="empty Path"):
+        path.delete_inplace()
 
 
 def test_find_paths_with_jsonpath_ng():
@@ -187,6 +224,13 @@ def test_add_concatenates_paths_and_keys():
     p2 = Path(("a",)) + Path(("b",))
     assert tuple(p2) == ("a", "b")
     assert p2.resolve(data) == 1
+
+
+def test_radd_treats_string_and_int_as_single_keys():
+    assert tuple("user" + Path(("name",))) == ("user", "name")
+    assert str("user" + Path(("name",))) == "$.user.name"
+    assert tuple(0 + Path(("name",))) == (0, "name")
+    assert str(0 + Path(("name",))) == "$[0].name"
 
 
 def test_path_iterates_over_keys():
@@ -295,6 +339,32 @@ def test_pathnode_container_mismatch_raises():
         node.resolve({"a": 1})
 
 
+def test_pathnode_invalid_container_error_is_stable_for_int_keys():
+    with pytest.raises(TypeError, match="PathNode container must be"):
+        PathNode(key=1, container=object())
+
+
+def test_pathnode_mutation_requires_container():
+    node = PathNode(key="a")
+
+    with pytest.raises(ResolutionError, match="Missing container reference"):
+        node.set_inplace(1)
+
+    with pytest.raises(ResolutionError, match="Missing container reference"):
+        node.delete_inplace()
+
+
+def test_path_rejects_invalid_key_types():
+    with pytest.raises(TypeError, match="Path keys must be int or str"):
+        Path((object(),))
+
+
 def test_empty_path_requires_root():
     with pytest.raises(ResolutionError):
         Path().resolve()
+
+
+def test_ensure_absolute_accepts_absolute_and_rejects_relative_paths():
+    assert ensure_absolute("$.users[0].name") == "$.users[0].name"
+    with pytest.raises(ValueError, match="absolute"):
+        ensure_absolute("users[0].name")
