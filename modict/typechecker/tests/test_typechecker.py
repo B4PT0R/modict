@@ -2,6 +2,7 @@
 
 import pytest
 import modict.typechecker.src._public_api as public_api
+import typing
 
 from typing import (
     Any,
@@ -12,7 +13,6 @@ from typing import (
     Iterable,
     Annotated,
     Literal,
-    LiteralString,
     Union,
     Optional,
     MutableMapping,
@@ -30,9 +30,6 @@ from typing import (
     TypeAlias,
     ForwardRef,
     Generic,
-    Required,
-    NotRequired,
-    Never,
     NoReturn,
     Iterator as TypingIterator,
     Generator as TypingGenerator,
@@ -40,6 +37,11 @@ from typing import (
 )
 from collections import UserDict, UserList, deque
 import collections.abc
+
+try:
+    from typing import LiteralString, Required, NotRequired, Never
+except ImportError:  # Python 3.10
+    from typing_extensions import LiteralString, Required, NotRequired, Never
 
 from typechecker import (
     check_type,

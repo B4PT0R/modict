@@ -29,6 +29,7 @@ dev = [
     "pytest-html>=4.1.1",
     "flake8",
     "black",
+    "typing_extensions>=4.0",
 ]
 
 [project.urls]

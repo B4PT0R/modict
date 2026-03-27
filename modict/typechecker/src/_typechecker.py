@@ -11,6 +11,11 @@ import collections.abc
 import sys
 import functools
 
+try:  # pragma: no cover - optional backport on older Python versions
+    import typing_extensions as _typing_extensions
+except Exception:  # pragma: no cover
+    _typing_extensions = None
+
 #region: Errors
 
 class TypeCheckException(Exception):
@@ -184,6 +189,9 @@ class TypeChecker:
                 getattr(typing, "Required", None),
                 getattr(typing, "NotRequired", None),
                 getattr(typing, "ReadOnly", None),
+                getattr(_typing_extensions, "Required", None) if _typing_extensions is not None else None,
+                getattr(_typing_extensions, "NotRequired", None) if _typing_extensions is not None else None,
+                getattr(_typing_extensions, "ReadOnly", None) if _typing_extensions is not None else None,
             )
             if wrapper is not None
         )
