@@ -5,7 +5,7 @@ from typing import Any, Dict, Tuple
 
 from ...collections_utils import MISSING
 
-from ._core import Computed, ModelValidator, Validator
+from ._core import Attribute, Computed, ModelValidator, Validator
 from ._field import Field
 
 
@@ -94,16 +94,19 @@ def build_fields_and_model_validators(
     name: str,
     bases: Tuple[type, ...],
     dct: Dict[str, Any],
-) -> tuple[dict[str, Field], list[ModelValidator]]:
+) -> tuple[dict[str, Field], list[ModelValidator], dict[str, Any]]:
     fields: dict[str, Field] = {}
     annotations = get_annotations(dct, name, bases)
     model_validators: list[ModelValidator] = []
+    attributes: dict[str, Any] = {}
 
     for base in reversed(bases):
         if hasattr(base, "__fields__"):
             fields.update(base.__fields__)  # type: ignore[attr-defined]
         if hasattr(base, "__model_validators__"):
             model_validators.extend(list(base.__model_validators__))  # type: ignore[attr-defined]
+        if hasattr(base, "__attributes__"):
+            attributes.update(base.__attributes__)  # type: ignore[attr-defined]
 
     existing_model_validators = dct.get("__model_validators__")
     if existing_model_validators:
@@ -112,25 +115,39 @@ def build_fields_and_model_validators(
     for key, hint in annotations.items():
         if key in dct:
             value = dct[key]
+            if isinstance(value, Attribute):
+                fields.pop(key, None)
+                attributes[key] = value.value
+                dct[key] = value.value
+                continue
             if isinstance(value, FunctionType) and hasattr(value, "_is_computed"):
                 cache = getattr(value, "_computed_cache", False)
                 deps = getattr(value, "_computed_deps", None)
                 computed_obj = Computed(value, cache=cache, deps=deps)
                 func_return_hint = getattr(value, "__annotations__", {}).get("return")
                 final_hint = hint if hint is not None else func_return_hint
+                attributes.pop(key, None)
                 fields[key] = Field(default=computed_obj, hint=final_hint, required=False)
             elif not isinstance(value, Field):
+                attributes.pop(key, None)
                 fields[key] = Field(default=value, hint=hint, required=False)
             else:
                 if value.hint is None:
                     value.hint = hint
+                attributes.pop(key, None)
                 fields[key] = value
             dct.pop(key)
         else:
+            attributes.pop(key, None)
             fields[key] = Field(default=MISSING, hint=hint, required=False)
 
     for key, value in list(dct.items()):
         if key in annotations:
+            continue
+        if isinstance(value, Attribute):
+            fields.pop(key, None)
+            attributes[key] = value.value
+            dct[key] = value.value
             continue
         if not is_field(key, value, name, bases, dct):
             continue
@@ -140,10 +157,13 @@ def build_fields_and_model_validators(
             deps = getattr(value, "_computed_deps", None)
             computed_obj = Computed(value, cache=cache, deps=deps)
             func_return_hint = getattr(value, "__annotations__", {}).get("return")
+            attributes.pop(key, None)
             fields[key] = Field(default=computed_obj, hint=func_return_hint, required=False)
         elif not isinstance(value, Field):
+            attributes.pop(key, None)
             fields[key] = Field(default=value)
         else:
+            attributes.pop(key, None)
             fields[key] = value
         dct.pop(key)
 
@@ -168,5 +188,4 @@ def build_fields_and_model_validators(
             model_validators.append(ModelValidator(value, mode=mode))
             dct.pop(key)
 
-    return fields, model_validators
-
+    return fields, model_validators, attributes

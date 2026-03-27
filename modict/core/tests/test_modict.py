@@ -117,7 +117,7 @@ def test_computed_annotation_hint_does_not_conflict_with_storage():
     The stored value is a Computed object, but type checking must apply to the computed
     *result* on access, not to the stored Computed wrapper.
     """
-    from modict import Computed
+    from modict.model_api import Computed
 
     class Calc(modict):
         a: int
@@ -140,12 +140,234 @@ def test_computed_annotation_hint_does_not_conflict_with_storage():
         _ = bad.sum
 
 
+def test_dynamic_computed_on_declared_field_uses_model_hint_in_lax_mode():
+    class WithDeclaredComputedSlot(modict):
+        total: int
+
+    m = WithDeclaredComputedSlot()
+    m["total"] = modict.computed(lambda self: "3")
+
+    assert m.total == 3
+    assert isinstance(m.total, int)
+
+
+def test_dynamic_computed_on_declared_field_uses_model_hint_in_strict_mode():
+    class StrictComputedSlot(modict):
+        _config = modict.config(strict=True)
+        total: int
+
+    m = StrictComputedSlot()
+    m["total"] = modict.computed(lambda self: "3")
+
+    with pytest.raises(TypeError, match="expected <class 'int'>"):
+        _ = m.total
+
+
+def test_dynamic_computed_on_undeclared_field_ignores_callable_return_annotation():
+    class DynamicComputed(modict):
+        pass
+
+    def compute(self) -> int:
+        return "3"
+
+    m = DynamicComputed()
+    m["total"] = modict.computed(compute)
+
+    assert m.total == "3"
+    assert isinstance(m.total, str)
+
+
 def test_attribute_errors_for_missing_keys():
     m = modict(a=1)
     with pytest.raises(AttributeError):
         _ = m.missing
     with pytest.raises(AttributeError):
         del m.missing
+
+
+def test_wrap_preserves_plain_dict_like_construction():
+    class Payload(modict):
+        count: int
+
+    plain = Payload(count="1")
+    wrapped = Payload.wrap()(count="1")
+
+    assert plain.count == 1
+    assert wrapped.count == 1
+    assert isinstance(wrapped, Payload)
+
+
+def test_wrap_allows_pre_and_post_logic_without_changing_init_signature():
+    class Payload(modict):
+        count: int
+
+        @classmethod
+        def __wrap_init__(cls, init, *, offset):
+            def wrapped(*args, **kwargs):
+                # Pre: normalize incoming dict payload before native construction.
+                if args:
+                    data = dict(args[0])
+                    data["count"] = int(data["count"]) + offset
+                    args = (data, *args[1:])
+                else:
+                    kwargs["count"] = int(kwargs["count"]) + offset
+                obj = init(*args, **kwargs)
+                # Post: attach runtime-only metadata outside the payload.
+                obj.set_attr("offset", offset)
+                return obj
+
+            return wrapped
+
+    wrapped = Payload.wrap(offset=2)
+    payload = wrapped(count="3")
+
+    assert payload.count == 5
+    assert payload.offset == 2
+    assert "offset" not in payload
+
+
+def test_wrap_does_not_apply_parent_wrapper_unless_child_routes_to_it():
+    class Base(modict):
+        count: int
+
+        @classmethod
+        def __wrap_init__(cls, init, *, trace_id):
+            def wrapped(*args, **kwargs):
+                obj = init(*args, **kwargs)
+                obj.set_attr("trace_id", trace_id)
+                return obj
+
+            return wrapped
+
+    class Child(Base):
+        @classmethod
+        def __wrap_init__(cls, init, *, trace_id):
+            def wrapped(*args, **kwargs):
+                obj = init(*args, **kwargs)
+                obj.set_attr("wrapped_by_child", True)
+                return obj
+
+            return wrapped
+
+    payload = Child.wrap(trace_id="req_123")(count=1)
+
+    assert payload.has_attr("trace_id") is False
+    assert payload.wrapped_by_child is True
+
+
+def test_wrap_supports_native_dict_constructor_shapes():
+    class Payload(modict):
+        count: int
+
+        @classmethod
+        def __wrap_init__(cls, init, *, offset):
+            def wrapped(*args, **kwargs):
+                if args:
+                    data = dict(args[0])
+                    data["count"] = int(data["count"]) + offset
+                    args = (data, *args[1:])
+                else:
+                    kwargs["count"] = int(kwargs["count"]) + offset
+                return init(*args, **kwargs)
+
+            return wrapped
+
+    wrapped = Payload.wrap(offset=2)
+
+    from_mapping = wrapped({"count": "3"})
+    from_pairs = wrapped([("count", "4")])
+    from_kwargs = wrapped(count="5")
+
+    assert from_mapping.count == 5
+    assert from_pairs.count == 6
+    assert from_kwargs.count == 7
+
+
+def test_wrap_contexts_are_isolated_and_do_not_pollute_payload():
+    class Payload(modict):
+        count: int
+
+        @classmethod
+        def __wrap_init__(cls, init, *, trace_id):
+            def wrapped(*args, **kwargs):
+                obj = init(*args, **kwargs)
+                obj.set_attr("trace_id", trace_id)
+                return obj
+
+            return wrapped
+
+    first = Payload.wrap(trace_id="req_1")(count=1)
+    second = Payload.wrap(trace_id="req_2")(count=1)
+
+    assert first.trace_id == "req_1"
+    assert second.trace_id == "req_2"
+    assert "trace_id" not in first
+    assert "trace_id" not in second
+    assert first.dumps() == '{"count": 1}'
+
+
+def test_wrap_allows_explicit_parameter_routing_to_parent_wrapper():
+    calls = []
+
+    class Base(modict):
+        value: int
+
+        @classmethod
+        def __wrap_init__(cls, init, *, registry):
+            def wrapped(*args, **kwargs):
+                calls.append(f"base:before:{registry}")
+                obj = init(*args, **kwargs)
+                obj.set_attr("registry", registry)
+                calls.append(f"base:after:{registry}")
+                return obj
+
+            return wrapped
+
+    class Child(Base):
+        @classmethod
+        def __wrap_init__(cls, init, *, registry, renderer):
+            init = Base.__wrap_init__(init, registry=registry)
+
+            def wrapped(*args, **kwargs):
+                calls.append(f"child:before:{renderer}")
+                obj = init(*args, **kwargs)
+                obj.set_attr("renderer", renderer)
+                calls.append(f"child:after:{renderer}")
+                return obj
+
+            return wrapped
+
+    payload = Child.wrap(registry="component-registry", renderer="html")(
+        value=1
+    )
+
+    assert calls == [
+        "child:before:html",
+        "base:before:component-registry",
+        "base:after:component-registry",
+        "child:after:html",
+    ]
+    assert payload.registry == "component-registry"
+    assert payload.renderer == "html"
+
+
+def test_wrap_post_logic_sees_validated_and_coerced_object():
+    class Payload(modict):
+        count: int
+
+        @classmethod
+        def __wrap_init__(cls, init, *, label):
+            def wrapped(*args, **kwargs):
+                obj = init(*args, **kwargs)
+                obj.set_attr("summary", f"{label}:{obj.count}:{type(obj.count).__name__}")
+                return obj
+
+            return wrapped
+
+    payload = Payload.wrap(label="count")(count="3")
+
+    assert payload.count == 3
+    assert payload.summary == "count:3:int"
 
 
 def test_auto_convert_disabled():
@@ -315,7 +537,7 @@ def test_computed_dict_value_assignment():
 
 def test_evaluate_computed_false_returns_raw_computed_object():
     """When evaluate_computed=False, Computed fields are not evaluated on access."""
-    from modict import Computed
+    from modict.model_api import Computed
 
     calls = {"n": 0}
 

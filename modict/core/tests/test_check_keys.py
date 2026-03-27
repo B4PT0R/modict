@@ -71,6 +71,25 @@ def test_check_keys_bypasses_computed_override_protection():
     assert m["sum"] == 123
 
 
+def test_check_values_true_does_not_trigger_on_plain_modict():
+    # check_values=True (default) must not run the pipeline when the modict
+    # has no hints, validators, or model-like config flags — no spurious errors,
+    # no coercion, just plain dict behaviour.
+    m = modict({"x": "hello", "y": [1, 2, 3]})
+    assert m["x"] == "hello"
+    m["z"] = 42
+    assert m["z"] == 42
+
+
+def test_check_keys_true_does_not_trigger_on_plain_modict():
+    # check_keys=True (default) must not enforce any key constraints when the
+    # modict declares no required fields, no extra policy, and no computed fields.
+    m = modict({"a": 1})
+    m["b"] = 2          # extra key — must not raise
+    del m["a"]          # deletion — must not raise
+    assert list(m.keys()) == ["b"]
+
+
 def test_frozen_is_never_bypassed_by_check_keys():
     class FrozenNoKeys(modict):
         _config = modict.config(frozen=True, check_keys=False)

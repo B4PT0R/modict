@@ -65,10 +65,91 @@ class TestAttributeAccess:
         assert t["x"] == 5
         assert type(t["x"]) is int
 
+    def test_setattr_attribute_wrapper_stores_plain_instance_attribute(self):
+        m = modict(a=1)
+        m.trace_id = modict.attr("req_123")
+
+        assert m.trace_id == "req_123"
+        assert "trace_id" not in m
+
+    def test_set_attr_stores_plain_instance_attribute(self):
+        m = modict(a=1)
+        m.set_attr("trace_id", "req_123")
+
+        assert m.trace_id == "req_123"
+        assert m.has_attr("trace_id") is True
+        assert "trace_id" not in m
+
+    def test_setitem_attribute_wrapper_stores_plain_instance_attribute(self):
+        m = modict(a=1)
+        m["trace_id"] = modict.attr("req_123")
+
+        assert m.trace_id == "req_123"
+        assert "trace_id" not in m
+
+    def test_init_attribute_wrapper_bypasses_mapping_storage(self):
+        m = modict(a=1, trace_id=modict.attr("req_123"))
+
+        assert m.trace_id == "req_123"
+        assert "trace_id" not in m
+
     def test_getattr_missing_raises_attribute_error(self):
         m = modict(a=1)
         with pytest.raises(AttributeError):
             _ = m.nonexistent
+
+    def test_delattr_removes_plain_instance_attribute(self):
+        m = modict()
+        m.trace_id = modict.attr("req_123")
+
+        del m.trace_id
+
+        with pytest.raises(AttributeError):
+            _ = m.trace_id
+
+    def test_del_attr_removes_plain_instance_attribute(self):
+        m = modict()
+        m.set_attr("trace_id", "req_123")
+
+        m.del_attr("trace_id")
+
+        assert m.has_attr("trace_id") is False
+        with pytest.raises(AttributeError):
+            _ = m.trace_id
+
+    def test_has_attr_sees_inherited_class_metadata(self):
+        class Tagged(modict):
+            source = modict.attr("crm")
+
+        m = Tagged()
+
+        assert m.has_attr("source") is True
+        assert m.source == "crm"
+
+    def test_del_attr_on_inherited_class_metadata_is_noop(self):
+        class Tagged(modict):
+            source = modict.attr("crm")
+
+        m = Tagged()
+
+        m.del_attr("source")
+
+        assert m.has_attr("source") is True
+        assert m.source == "crm"
+
+    def test_del_attr_removes_instance_override_and_reveals_inherited_metadata(self):
+        class Tagged(modict):
+            source = modict.attr("crm")
+
+        m = Tagged()
+        m.set_attr("source", "erp")
+
+        assert m.source == "erp"
+
+        m.del_attr("source")
+
+        assert m.source == "crm"
+        assert m.has_attr("source") is True
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +340,17 @@ class TestDeepcopy:
 
         assert c is not m
         assert c["self"] is c
+
+    def test_copy_and_deepcopy_preserve_plain_instance_attributes(self):
+        m = modict(a=1)
+        m.runtime_meta = modict.attr({"trace_id": "req_123"})
+
+        shallow = m.copy()
+        deep = m.deepcopy()
+
+        assert shallow.runtime_meta is m.runtime_meta
+        assert deep.runtime_meta == m.runtime_meta
+        assert deep.runtime_meta is not m.runtime_meta
 
     def test_deepcopy_preserves_shared_alias_topology(self):
         shared = modict(value=1)

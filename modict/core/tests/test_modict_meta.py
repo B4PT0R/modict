@@ -1,5 +1,6 @@
 """Tests for modict metaclass utilities (config and views)."""
 
+import pytest
 import warnings
 from ...core import modict
 from ...core import modictConfig
@@ -89,3 +90,40 @@ def test_modict_views_reflect_mutations():
     assert "c" in keys_view
     assert 3 in values_view
     assert ("c", 3) in items_view
+
+
+def test_attr_declaration_bypasses_field_collection_and_is_inherited():
+    class Base(modict):
+        source = modict.attr("crm")
+        label: str = modict.attr("customer")
+        age: int = 1
+
+    class Child(Base):
+        region = modict.attr("eu")
+
+    assert "source" not in Base.__fields__
+    assert "label" not in Base.__fields__
+    assert Base.__attributes__["source"] == "crm"
+    assert Base.__attributes__["label"] == "customer"
+    assert Base.source == "crm"
+    assert Base.label == "customer"
+
+    child = Child()
+    assert child.source == "crm"
+    assert child.label == "customer"
+    assert child.region == "eu"
+    assert "source" not in child
+    assert "label" not in child
+    assert "region" not in child
+
+
+def test_attr_cannot_override_inherited_field():
+    class Base(modict):
+        age: int
+
+    with pytest.raises(AttributeError, match="declared as a field"):
+        Base(age=modict.attr("ignored"))
+
+    base = Base(age=1)
+    with pytest.raises(AttributeError, match="declared as a field"):
+        base["age"] = modict.attr("nope")

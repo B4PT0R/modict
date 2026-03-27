@@ -3,6 +3,7 @@ from types import ClassMethodDescriptorType
 from typing import Optional, Union, Tuple, Set, Dict, List, Any, Callable, Type
 from ...typechecker import TypeMismatchError, check_type
 from ...model_api import (
+    Attribute,
     check_json_serializable,
     invalidate_dependants,
     maybe_coerce,
@@ -145,6 +146,32 @@ class modict(dict, metaclass=modictMeta):
         return f
 
     @classmethod
+    def attr(cls, value: Any) -> Attribute:
+        """Wrap a value so it stays an attribute instead of becoming a field."""
+        return Attribute(value)
+
+    @classmethod
+    def wrap(cls, *wrap_args, **wrap_kwargs):
+        """Return a wrapped constructor without changing the native dict signature.
+
+        This exists for business/runtime parameters that should not be threaded
+        through ``__init__`` itself. ``MyModict(data)`` and
+        ``MyModict(**dict_kwargs)`` stay dict-like and predictable; enriched
+        construction goes through ``MyModict.wrap(...)(...)`` instead.
+
+        ``wrap(...)`` intentionally resolves a single ``__wrap_init__`` entry
+        point on ``cls``. If subclasses want to compose with parent wrapping
+        logic, they must route parameters and call parent ``__wrap_init__``
+        explicitly from their own override.
+        """
+        return cls.__wrap_init__(cls, *wrap_args, **wrap_kwargs)
+
+    @classmethod
+    def __wrap_init__(cls, init, *wrap_args, **wrap_kwargs):
+        """Special method reserved for wrapping the dict-like constructor."""
+        return init
+
+    @classmethod
     def validator(cls, field_name, *, mode: Literal["before", "after"] = "before"):
         """Decorator to create field validators/transformers.
 
@@ -285,6 +312,7 @@ class modict(dict, metaclass=modictMeta):
             args = (data,)
 
         super().__init__(*args,**kwargs)
+        self._extract_attribute_wrappers()
 
         # Inject defaults and computed
         for key, field in self.__fields__.items():
@@ -307,15 +335,31 @@ class modict(dict, metaclass=modictMeta):
         if self._check_values_enabled():
             self.validate()
 
+    def _extract_attribute_wrappers(self) -> None:
+        for key, value in list(dict.items(self)):
+            if isinstance(value, Attribute):
+                dict.__delitem__(self, key)
+                self._store_attribute(key, value)
+
+    def _store_attribute(self, key: str, value: Attribute) -> None:
+        if key in getattr(self, "__fields__", {}):
+            raise AttributeError(f"Cannot store attribute '{key}': that name is declared as a field")
+        if key in self:
+            raise AttributeError(f"Cannot store attribute '{key}': that name already exists as a mapping key")
+        class_attributes = getattr(type(self), "__attributes__", {})
+        if hasattr(type(self), key) and key not in class_attributes:
+            raise AttributeError(
+                f"Cannot assign attribute '{key}': '{type(self).__name__}.{key}' already exists. "
+                "Use a different name for metadata attributes."
+            )
+        object.__setattr__(self, key, value.value)
+
     def _check_keys_enabled(self) -> bool:
         """Return True if modict should enforce key-level structural constraints."""
-        mode = getattr(self._config, "check_keys", "auto")
-        if mode is True:
-            return True
-        if mode is False:
+        if not getattr(self._config, "check_keys", True):
             return False
 
-        # auto: enable when the instance/class declares key constraints
+        # True: enable when the instance/class declares key constraints
         fields = getattr(self, "__fields__", {}) or {}
         has_required = any(bool(getattr(f, "required", False)) for f in fields.values())
         has_computed = any(isinstance(getattr(f, "default", None), Computed) for f in fields.values())
@@ -422,13 +466,10 @@ class modict(dict, metaclass=modictMeta):
 
     def _check_values_enabled(self) -> bool:
         """Return True if modict should run its value/key checking pipeline."""
-        mode = getattr(self._config, "check_values", "auto")
-        if mode is True:
-            return True
-        if mode is False:
+        if not getattr(self._config, "check_values", True):
             return False
 
-        # auto: enable when the class looks "model-like"
+        # True: enable when the class looks "model-like"
         has_hints = any(
             (field.hint is not None)
             for field in getattr(self, "__fields__", {}).values()
@@ -753,6 +794,9 @@ class modict(dict, metaclass=modictMeta):
         return self._auto_convert_and_store(key, value)
 
     def __setitem__(self, key, value):
+        if isinstance(value, Attribute):
+            self._store_attribute(key, value)
+            return
         self._store_item(
             key,
             value,
@@ -868,6 +912,10 @@ class modict(dict, metaclass=modictMeta):
             modict: A new modict with the same items
         """
         new = type(self)._new_empty_like(config=self._config)
+        for key, value in self.__dict__.items():
+            if key == "_config":
+                continue
+            object.__setattr__(new, key, value)
         for key, value in dict.items(self):
             cloned = value.copy() if isinstance(value, Computed) else value
             dict.__setitem__(new, key, cloned)
@@ -992,6 +1040,34 @@ class modict(dict, metaclass=modictMeta):
         else:
             return super().__getattribute__(key)
 
+    def has_attr(self, key: str) -> bool:
+        """Return True if a plain attribute metadata entry exists.
+
+        This checks both instance-level attributes set via ``set_attr()`` /
+        ``modict.attr(...)`` and inherited class-level attributes declared with
+        ``modict.attr(...)``.
+        """
+        if key in self.__dict__:
+            return True
+        return key in getattr(type(self), "__attributes__", {})
+
+    def set_attr(self, key: str, value: Any) -> None:
+        """Store plain metadata outside of the mapping payload."""
+        self._store_attribute(key, Attribute(value))
+
+    def del_attr(self, key: str) -> None:
+        """Delete an instance-level metadata override when present.
+
+        If the name also exists as inherited class metadata, deleting the
+        override simply falls back to the inherited value instead of raising.
+        """
+        if key in self.__dict__:
+            object.__delattr__(self, key)
+            return
+        if key in getattr(type(self), "__attributes__", {}):
+            return
+        raise AttributeError(f"'{type(self).__name__}' object has no metadata attribute '{key}'")
+
     def __setattr__(self, key, value):
         """Allow attribute-style setting of dictionary keys.
 
@@ -1003,6 +1079,9 @@ class modict(dict, metaclass=modictMeta):
             key: The attribute/key name
             value: The value to set
         """
+        if isinstance(value, Attribute):
+            self._store_attribute(key, value)
+            return
         if hasattr(type(self), key):
             raise AttributeError(
                 f"Cannot assign attribute '{key}': '{type(self).__name__}.{key}' already exists. "
@@ -1022,6 +1101,8 @@ class modict(dict, metaclass=modictMeta):
             AttributeError: If the attribute/key doesn't exist
         """
         if hasattr(type(self), key):
+            object.__delattr__(self, key)
+        elif key in self.__dict__:
             object.__delattr__(self, key)
         elif key in self:
             del self[key]
@@ -1686,6 +1767,10 @@ class modict(dict, metaclass=modictMeta):
             return existing
         new = type(self)._new_empty_like(config=self._config)
         memo[id(self)] = new
+        for key, value in self.__dict__.items():
+            if key == "_config":
+                continue
+            object.__setattr__(new, key, copy.deepcopy(value, memo))
         for key, value in dict.items(self):
             cloned = value.copy() if isinstance(value, Computed) else copy.deepcopy(value, memo)
             dict.__setitem__(new, key, cloned)

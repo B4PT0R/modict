@@ -9,6 +9,16 @@ from ._computed import Computed
 from ._validators import Validator, ModelValidator
 
 
+class Attribute:
+    """Explicit wrapper for values that should stay plain attributes, not fields."""
+
+    def __init__(self, value: Any):
+        self.value = value
+
+    def __repr__(self) -> str:
+        return f"Attribute({self.value!r})"
+
+
 class Factory:
     """Explicit default factory wrapper (distinguishes callables from factory defaults)."""
 
@@ -17,7 +27,6 @@ class Factory:
 
     def __call__(self) -> Any:
         return self.factory()
-
 
 
 

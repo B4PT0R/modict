@@ -2,7 +2,7 @@
 
 from .src._computed import invalidate_dependants
 from .src._config import Config
-from .src._core import Computed, Factory, ModelValidator, Validator
+from .src._core import Attribute, Computed, Factory, ModelValidator, Validator
 from .src._field import Field
 from .src._metaclass_fields import (
     build_fields_and_model_validators,
@@ -18,6 +18,7 @@ from .src._validation import (
 
 __all__ = [
     "Factory",
+    "Attribute",
     "Config",
     "Field",
     "Validator",

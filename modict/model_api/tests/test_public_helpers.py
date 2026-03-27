@@ -134,13 +134,14 @@ def test_build_fields_and_model_validators_collects_computed_and_validators():
         "plain": "value",
     }
 
-    fields, model_validators = build_fields_and_model_validators("Demo", (), dct)
+    fields, model_validators, attributes = build_fields_and_model_validators("Demo", (), dct)
 
     assert fields["count"].hint is int
     assert fields["plain"].default == "value"
     assert fields["total"].hint is int
     assert fields["total"].default.cache is True
     assert fields["name"].validators[0].mode == "after"
+    assert attributes == {}
     assert model_validators[0].mode == "before"
     assert "total" not in dct
     assert "validate_name" not in dct

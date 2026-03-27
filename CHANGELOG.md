@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.4
+
+### Added
+- `modict.attr(...)` / `Attribute` for explicit runtime/class metadata that stays outside the payload instead of being collected as a field
+- `set_attr()` / `has_attr()` / `del_attr()` instance helpers for ergonomic runtime metadata management
+- `modict.wrap(...)` / `__wrap_init__()` for advanced constructor-time business context without polluting the native dict-like constructor signature
+- A new `examples/` directory with practical end-to-end scripts covering webhook payloads, config rollouts, SDK object adaptation, redaction/export flows, and a React-like UI component tree
+
+### Changed
+- `wrap(...)` now resolves a single `__wrap_init__` entry point on the target class; inheritance-time parameter routing is explicit inside user overrides instead of being inferred across the MRO
+- The root `modict` package now keeps a tighter convenience surface focused on the main entry points; advanced descriptor/config/runtime classes stay exposed from their dedicated submodules
+- The README now starts every Python snippet from explicit imports, routes readers more clearly toward submodule READMEs from the package tour, and keeps advanced payload/runtime patterns later in the narrative
+- `Computed` semantics are documented more explicitly: class-declared computeds participate in the model contract, while dynamic instance computeds remain runtime values unless they target an already-declared field
+
+### Fixed
+- Runtime attrs declared with `modict.attr(...)` now bypass field collection reliably, remain available through inheritance, and can be overridden or cleared on instances without conflicting with declared field names
+- `wrap(...)` behavior is now aligned between implementation, documentation, and tests for inheritance-heavy use cases
+
+### Tests
+- Added regression coverage for runtime attrs, wrapped construction, explicit wrap-parameter routing in inheritance scenarios, dynamic computed typing semantics, and the narrowed root public API
+
 ## 0.4.3
 
 ### Fixed

@@ -12,12 +12,11 @@ import pytest
 from typing import List
 from modict import (
     modict as md,
-    Field,
-    Computed,
     Path,
     MISSING,
     TypeMismatchError,
 )
+from modict.model_api import Computed, Field
 
 
 # ---------------------------------------------------------------------------

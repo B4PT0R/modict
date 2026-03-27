@@ -1,6 +1,6 @@
 # modict
 
-`modict` is a Python `dict` subclass with an optional model-like layer: typed fields, defaults, factories, validators, computed values, and a full set of deep nested operations.
+`modict` (short for `modern dict` or `model dict`) is a Python `dict` subclass with an optional model-like layer: typed fields, defaults, factories, validators, computed values, and a full set of deep nested operations.
 
 It stays a real `dict` throughout — every standard dict method works, and modict instances are accepted everywhere a `dict` or `Mapping` is expected, without conversion.
 
@@ -29,18 +29,20 @@ It stays a real `dict` throughout — every standard dict method works, and modi
 ## Contents
 
 - [Installation](#installation)
+- [Examples](#examples)
 - [Quick Start](#quick-start)
-- [Path-Based Tools](#path-based-tools)
 - [Core Concepts](#core-concepts)
 - [Field Definition](#field-definition)
 - [Factories](#factories)
 - [Validators](#validators)
 - [Computed Fields](#computed-fields)
 - [Validation Pipeline](#validation-pipeline)
+- [Path-Based Tools](#path-based-tools)
 - [Configuration (Deep Dive)](#configuration-deep-dive)
 - [Type Checking & Coercion](#type-checking--coercion)
 - [Serialization](#serialization)
 - [Deep Conversion & Deep Ops](#deep-conversion--deep-ops)
+- [Payload vs Runtime](#payload-vs-runtime)
 - [Package Tour (Internal Modules)](#package-tour-internal-modules)
 - [Public API Reference](#public-api-reference)
 - [Development](#development)
@@ -56,6 +58,15 @@ pip install modict
 Requirements:
 - Python 3.10+
 - JSONPath support relies on `jsonpath-ng` (the only external dependency)
+
+## Examples
+
+See [examples/README.md](examples/README.md) for a small set of practical,
+end-to-end scripts covering:
+- typed webhook payloads
+- config rollouts and patching
+- adapting SDK / ORM objects with `from_attributes`
+- redaction / export flows with `Query`, `Path`, `walk`, and `unwalk`
 
 ## Quick Start
 
@@ -92,76 +103,6 @@ Tip: Annotated fields without defaults are not required by default; they provide
 
 `repr(modict)` shows the live user-facing view of the structure. Computed fields are evaluated for display and rendered as `Computed(current_value)` so they stay identifiable in console output.
 
-## Path-Based Tools
-
-`modict` comes with a consistent path system for reading/writing nested structures (including inside lists), plus a `Path` object for disambiguation and introspection.
-
-### Supported path formats
-
-You can target nested values using:
-- **JSONPath strings** (RFC 9535): `$.users[0].name`
-- **Tuples** of keys/indices: `("users", 0, "name")`
-- **`Path` objects**: `Path("$.users[0].name")`
-
-`Path(...)` also accepts relative dotted strings such as `users[0].name` and
-normalizes them back to the absolute JSONPath form in `str(path)`.
-
-### The `Path` object
-
-`Path` is a parsed, strongly-typed representation of a nested path.
-
-```python
-from modict import Path
-
-p = Path("$.users[0].name")
-p = Path("users[0].name")
-assert tuple(p) == ("users", 0, "name")
-assert str(p) == "$.users[0].name"      # __str__ renders back to JSONPath
-assert repr(p) == "Path($.users[0].name)"
-
-assert p.starts_with(("users", 0))
-assert p.relative_to(("users",)) == Path((0, "name"))
-
-bound = p.with_root({"users": [{"name": "Alice"}]})
-assert bound.resolve() == "Alice"
-```
-
-Internally, a `Path` is a tuple of `PathNode` components. Each node carries:
-- the **key/index** (`"users"`, `0`, `"name"`)
-- an optional reference to the **origin container instance** when it can be inferred, which lets helpers distinguish `Mapping` vs `Sequence` structure during reconstruction.
-
-All nested helpers accept JSONPath strings, tuples, or `Path` objects interchangeably.
-
-### Nested operations
-
-```python
-from modict import modict
-
-m = modict({"user": {"name": "Alice"}})
-
-m.get_nested("$.user.name")           # "Alice"
-m.set_nested("$.user.age", 30)
-m.has_nested("$.user.age")            # True
-m.pop_nested("$.user.age")            # 30
-m.del_nested("$.user.name")           # removes the key
-
-m.set_nested(
-    "$.prefs.theme",
-    "dark",
-    create_missing=True,
-    container_factory=lambda path: {},
-)
-```
-
-### Paths in deep traversal
-
-- `walk()` yields `(Path, value)` leaf pairs.
-- `walked()` returns a `{Path: value}` mapping.
-- `unwalk(walked)` reconstructs a nested structure from a `{Path: value}` mapping using plain `dict` / `list` containers.
-- `unwalk(..., kind_resolver=...)` can refine the inferred structure per container path.
-- `ignore_types=True` remains available as a legacy mode to ignore `Path` hints and use only local key-shape heuristics.
-- `modict.unwalk(...)` then retypes the root mapping through the target class, so model validation/coercion can re-establish the desired root type.
-
 ## Core Concepts
 
 - `modict` is a real `dict`: it supports standard dict operations and behaves like a mutable mapping.
@@ -169,30 +110,48 @@ m.set_nested(
 - The model-like behavior is controlled by the `_config` class attribute (a `modictConfig` dataclass):
 
 ```python
+from modict import modict
+
 class User(modict):
     _config = modict.config(extra="allow")  # see "Configuration (Deep Dive)" for full reference
 ```
 
 ## Field Definition
 
-The recommended public entry-point is `modict.field(...)`:
+For most fields, the recommended style is still the simple direct one:
 
 ```python
+from modict import modict
+
+class User(modict):
+    name: str
+    age: int = 25
+```
+
+Use `modict.field(...)` when you need more explicit control over a field
+definition. It is the more expert/advanced form, not the default style:
+
+```python
+from modict import MISSING, modict
+
 modict.field(
-    default=MISSING,
-    hint=None,       # None = use class annotation when provided
-    required=False,  # only required when explicitly True
+    default=MISSING,  # default value (MISSING means "no default value")
+    hint=None,       # type hint, None = use class annotation when provided
+    required=False,  # whether the field is required
     validators=None, # internal: used by the metaclass when collecting @modict.validator(...)
 )
 ```
 
+`default=MISSING` is already the default behavior, so you usually do not need to
+write it explicitly.
+
 Example (explicit defaults):
 
 ```python
-from modict import modict, MISSING
+from modict import modict
 
 class User(modict):
-    name: str = modict.field(default=MISSING, required=True)
+    name: str = modict.field(required=True)
     age = modict.field(default=25, hint=int)
 
 u = User({"name": "Alice", "age": "30"})
@@ -264,6 +223,13 @@ class Range(modict):
 
 Computed fields are virtual values evaluated on access. They are stored as `Computed` objects inside the dict and evaluated via `__getitem__`.
 
+When a computed is declared on the **class**, it becomes part of the model
+contract just like any other declared field:
+- it is collected into `__fields__`
+- it participates in key-level model semantics
+- its return value is checked against the field hint (class annotation first,
+  callable return annotation second)
+
 ```python
 from modict import modict
 
@@ -281,18 +247,28 @@ c.a = 10
 assert c.sum == 12  # cache invalidated because "a" changed
 ```
 
+The modict.computed API is quite flexible and supports inline definitions as well:
+
 Inline (non-decorator) form:
 
 ```python
+from modict import modict
+
 class Calc(modict):
     a: int
     b: int
-    sum = modict.computed(lambda m: m.a + m.b, cache=True, deps=["a", "b"])
+    sum:int = modict.computed(lambda m: m.a + m.b, cache=True, deps=["a", "b"])
 ```
+
+By contrast, a computed attached dynamically on an **instance** is just a
+dynamic value stored under that key. It does **not** create a new model field
+or change the class-level contract:
 
 Inline "dict value" form (no subclass):
 
 ```python
+from modict import modict
+
 m = modict({"a": 1, "b": 2})
 m["sum"] = modict.computed(lambda m: m.a + m.b)
 assert m.sum == 3
@@ -300,6 +276,7 @@ assert m.sum == 3
 
 Notes:
 - Computed values still go through the validation pipeline (type checks, JSON serializability check, …) when enabled.
+- Dynamic instance-level computeds only benefit from field-level type hints if the key was already declared on the class. Otherwise they remain plain dynamic values.
 - Cache invalidation semantics:
   - `deps=None` (default): invalidate on any key change.
   - `deps=[...]`: invalidate only when one of the listed keys changes (can include other computed names).
@@ -308,6 +285,8 @@ Notes:
 Manual invalidation:
 
 ```python
+from modict import modict
+
 m = modict({"a": 1, "b": 2})
 m["sum"] = modict.computed(lambda m: m.a + m.b, cache=True, deps=[])
 
@@ -349,12 +328,84 @@ Order of operations for a field value:
 
 If any step raises, the whole assignment is rejected.
 
+## Path-Based Tools
+
+`modict` comes with a consistent path system for reading/writing nested structures (including inside lists), plus a `Path` object for disambiguation and introspection.
+
+### Supported path formats
+
+You can target nested values using:
+- **JSONPath strings** (RFC 9535): `$.users[0].name`
+- **Tuples** of keys/indices: `("users", 0, "name")`
+- **`Path` objects**: `Path("$.users[0].name")`
+
+`Path(...)` also accepts relative dotted strings such as `users[0].name` and
+normalizes them back to the absolute JSONPath form in `str(path)`.
+
+### The `Path` object
+
+`Path` is a parsed, strongly-typed representation of a nested path.
+
+```python
+from modict import Path
+
+p = Path("$.users[0].name")
+p = Path("users[0].name")
+assert tuple(p) == ("users", 0, "name")
+assert str(p) == "$.users[0].name"      # __str__ renders back to JSONPath
+assert repr(p) == "Path($.users[0].name)"
+
+assert p.starts_with(("users", 0))
+assert p.relative_to(("users",)) == Path((0, "name"))
+
+bound = p.with_root({"users": [{"name": "Alice"}]})
+assert bound.resolve() == "Alice"
+```
+
+Internally, a `Path` is a tuple of `PathNode` components. Each node carries:
+- the **key/index** (`"users"`, `0`, `"name"`)
+- an optional reference to the **origin container instance** when it can be inferred, which lets helpers distinguish `Mapping` vs `Sequence` structure during reconstruction.
+
+All nested helpers accept JSONPath strings, tuples, or `Path` objects interchangeably.
+
+### Nested operations
+
+```python
+from modict import modict
+
+m = modict({"user": {"name": "Alice"}})
+
+m.get_nested("$.user.name")           # "Alice"
+m.set_nested("$.user.age", 30)
+m.has_nested("$.user.age")            # True
+m.pop_nested("$.user.age")            # 30
+m.del_nested("$.user.name")           # removes the key
+
+m.set_nested(
+    "$.prefs.theme",
+    "dark",
+    create_missing=True,
+    container_factory=lambda path: {},
+)
+```
+
+### Paths in deep traversal
+
+- `walk()` yields `(Path, value)` leaf pairs.
+- `walked()` returns a `{Path: value}` mapping.
+- `unwalk(walked)` reconstructs a nested structure from a `{Path: value}` mapping using plain `dict` / `list` containers.
+- `unwalk(..., kind_resolver=...)` can refine the inferred structure per container path.
+- `ignore_types=True` remains available as a legacy mode to ignore `Path` hints and use only local key-shape heuristics.
+- `modict.unwalk(...)` then retypes the root mapping through the target class, so model validation/coercion can re-establish the desired root type.
+
 ## Configuration (Deep Dive)
 
 All model-like behavior is controlled by the class attribute `_config`, a `modictConfig` dataclass created via `modict.config(...)`.
 Only modict-supported options are accepted — unknown keys raise `TypeError`.
 
 ```python
+from modict import modict
+
 class User(modict):
     _config = modict.config(
         check_values="auto",
@@ -378,6 +429,8 @@ class User(modict):
 Example: keep structure strict but skip value coercion/type checking:
 
 ```python
+from modict import modict
+
 class Msg(modict):
     _config = modict.config(check_values=False, check_keys=True, extra="forbid")
     role: str = modict.field(required=True)
@@ -411,6 +464,8 @@ Required vs defaults (dict-first semantics):
 If you want `modict` to behave as close as possible to a plain `dict` (minimal overhead), opt out of most advanced features:
 
 ```python
+from modict import modict
+
 class Fast(modict):
     _config = modict.config(
         check_values=False,      # skip validation/coercion pipeline
@@ -422,22 +477,39 @@ class Fast(modict):
 
 ### Config inheritance / merging
 
-`modict` merges configs across inheritance in a Pydantic-like way:
-- config values explicitly set in a subclass override inherited values
-- when using multiple inheritance, the left-most base wins (for explicitly-set config keys)
+Config values are merged across the MRO. The key rule: **only values explicitly passed to `modict.config(...)` participate in the merge** — default values never silently override a parent's choice.
 
 ```python
+from modict import modict
+
 class Base(modict):
-    _config = modict.config(extra="forbid")
-    x: int
+    _config = modict.config(extra="forbid", strict=True)
 
 class Child(Base):
-    y: int = 0
-    # inherits extra="forbid"
+    # No _config — inherits Base's config as-is.
+    # effective: extra="forbid", strict=True
 
 class Override(Child):
     _config = modict.config(extra="allow")
-    # extra is now "allow", rest inherited from Base/Child
+    # Only `extra` was explicitly set here, so only `extra` overrides.
+    # effective: extra="allow", strict=True  (strict inherited from Base)
+```
+
+With multiple inheritance, the **left-most base wins** for any conflicting explicitly-set key:
+
+```python
+from modict import modict
+
+class A(modict):
+    _config = modict.config(strict=True)
+
+class B(modict):
+    _config = modict.config(strict=False, extra="forbid")
+
+class C(A, B):
+    pass
+    # strict → True  (A wins over B, A is left-most)
+    # extra  → "forbid"  (only B set it, no conflict)
 ```
 
 ## Type Checking & Coercion
@@ -478,6 +550,15 @@ print(e.dumps())
 `json_encoders` in `_config` serves as the default encoder table for all `dumps()`/`dump()` calls on that class. You can override it per-call by passing `encoders=...` directly.
 
 ```python
+from datetime import datetime
+from modict import modict
+
+class Event(modict):
+    _config = modict.config(json_encoders={datetime: lambda d: d.isoformat()})
+    name: str
+    ts: datetime
+
+e = Event(name="launch", ts=datetime(2024, 1, 1))
 e.dumps(encoders={datetime: lambda d: d.timestamp()})
 # {"name": "launch", "ts": 1704067200.0}
 ```
@@ -485,6 +566,15 @@ e.dumps(encoders={datetime: lambda d: d.timestamp()})
 `dump()` writes to a file path or file-like object:
 
 ```python
+from datetime import datetime
+from modict import modict
+
+class Event(modict):
+    _config = modict.config(json_encoders={datetime: lambda d: d.isoformat()})
+    name: str
+    ts: datetime
+
+e = Event(name="launch", ts=datetime(2024, 1, 1))
 e.dump("event.json")
 ```
 
@@ -493,6 +583,8 @@ e.dump("event.json")
 Class-level methods that parse JSON and return a `modict` instance:
 
 ```python
+from modict import modict
+
 m = modict.loads('{"name": "launch", "ts": "2024-01-01T00:00:00"}')
 m = modict.load("event.json")
 ```
@@ -500,6 +592,13 @@ m = modict.load("event.json")
 These are thin wrappers around `json.loads`/`json.load` — no custom deserialization logic is applied. For typed deserialization with coercion, construct from the parsed dict directly:
 
 ```python
+from datetime import datetime
+from modict import modict
+
+class Event(modict):
+    name: str
+    ts: datetime
+
 data = modict.loads('{"name": "launch", "ts": "2024-01-01T00:00:00"}')
 event = Event(**data)  # pipeline runs: coercion, type checks, validators, ...
 ```
@@ -528,12 +627,186 @@ For serialization beyond JSON (e.g. YAML, MessagePack), `to_jsonable(obj, encode
 - `diffed(mapping)`: minimal nested patch — returns a plain modict containing only the changes needed so that `self.merge(self.diffed(other))` equals `other`. Keys removed in `other` are set to `MISSING`.
 - `deep_equals(mapping)`: deep equality by comparing walked representations (container types are ignored — a modict and a plain dict with the same leaves are equal). Use this when cross-type equality is needed; `==` uses the native dict comparison (type-sensitive).
 
+## Payload vs Runtime
+
+This is an advanced pattern.
+
+One of `modict`'s more flexible use cases is building objects that are:
+- **real dict payloads** for serialization, diffing, patching, and transport
+- **real Python objects** with methods, runtime metadata, and business behavior
+
+The important distinction is:
+- **mapping keys** are the payload
+- **attrs** are runtime/business context
+
+That separation is what keeps the object plastic without making the serialized
+representation fuzzy.
+
+### Why this exists
+
+In many codebases, the same conceptual object gets split into several layers:
+- a DTO / payload dict for transport
+- a model object for validation
+- a runtime object carrying services, registries, caches, renderers, parent refs, etc.
+
+`modict` can collapse a lot of that back into one object:
+- the **payload** still lives directly in the dict
+- the **behavior** lives on the class as normal methods
+- the **runtime context** lives in attrs outside the dict
+
+That means the same object can be:
+- dumped to JSON
+- diffed and patched deeply
+- passed anywhere a `dict` or `Mapping` is expected
+- still used as a domain object with methods like `render()`, `mount()`, `resolve_theme()`, `dispatch()`, ...
+
+### When to use `attr(...)`
+
+Use `modict.attr(...)` when a value should stay an attribute instead of becoming
+a field or a payload key.
+
+Typical cases:
+- class metadata such as `source_system`, `component_kind`, `schema_version`
+- instance metadata such as `trace_id`, `request_context`, `parent`, `dom_ref`
+- business/runtime objects that must not leak into JSON output
+
+```python
+from modict import modict
+
+class Component(modict):
+    kind = modict.attr("button")
+    label: str
+
+component = Component(label="Save")
+component.set_attr("trace_id", "req_123")
+
+assert component.kind == "button"
+assert component.trace_id == "req_123"
+assert "kind" not in component
+assert "trace_id" not in component
+```
+
+Rule of thumb:
+- if it should serialize, diff, merge, or travel over the wire: put it in the dict
+- if it is runtime-only context or behavior support: keep it as an attr
+
+### When to use `wrap(...)`
+
+Use `wrap(...)` when you need extra constructor-time business parameters but do
+**not** want to break the native `dict` constructor semantics.
+
+This is important because `modict` intentionally preserves the predictability of:
+- `MyModict(data)`
+- `MyModict(**payload)`
+
+So instead of inventing a custom `__init__(data, registry, renderer, ...)`,
+you keep the dict constructor clean and opt into an explicit wrapped
+construction path:
+
+```python
+from modict import modict
+
+class Component(modict):
+    name: str
+
+    @classmethod
+    def __wrap_init__(cls, init, *, registry, renderer):
+        def wrapped(*dict_args, **dict_kwargs):
+            obj = init(*dict_args, **dict_kwargs)
+            obj.set_attr("registry", registry)
+            obj.set_attr("renderer", renderer)
+            return obj
+        return wrapped
+
+component = Component.wrap(registry=my_registry, renderer=my_renderer)(
+    name="hero"
+)
+```
+
+This is there for two reasons:
+- `Component(data)` and `Component(**payload)` stay predictable and fully dict-like
+- wrapped construction gets full control around instantiation without polluting the payload with business-only parameters
+
+This gives you full control around instantiation:
+- pre-processing incoming dict args before native construction
+- post-processing the fully validated/coerced object after construction
+- composition through inheritance via multiple `__wrap_init__` layers
+
+When inheritance is involved, parameter routing stays explicit. There is only
+one wrap-time parameter space, so each `__wrap_init__` consumes what it needs
+and forwards the rest deliberately:
+
+```python
+from modict import modict
+
+class BaseComponent(modict):
+    name: str
+
+    @classmethod
+    def __wrap_init__(cls, init, *, registry):
+        def wrapped(*dict_args, **dict_kwargs):
+            obj = init(*dict_args, **dict_kwargs)
+            obj.set_attr("registry", registry)
+            return obj
+        return wrapped
+
+
+class Button(BaseComponent):
+    label: str
+
+    @classmethod
+    def __wrap_init__(cls, init, *, registry, renderer):
+        # Route `registry` to the parent wrapper yourself.
+        init = BaseComponent.__wrap_init__(init, registry=registry)
+
+        def wrapped(*dict_args, **dict_kwargs):
+            obj = init(*dict_args, **dict_kwargs)
+            obj.set_attr("renderer", renderer)
+            return obj
+        return wrapped
+
+
+button = Button.wrap(registry=my_registry, renderer=my_renderer)(
+    name="save-button",
+    label="Save",
+)
+```
+
+That explicit routing is the point: `modict` keeps the dict constructor clean,
+and `wrap(...)` gives you full control instead of inventing an implicit second
+constructor protocol.
+
+### Good use cases
+
+- UI/component trees: serializable props/state/children in the dict, runtime
+  refs/renderer/registry in attrs, methods like `mount()` and `render()` on the class
+- SDK/ORM adapters: transport-ready payload in the dict, source handles/session/context in attrs
+- workflow/job objects: diffable state in the dict, runtime executor/logger/trace context in attrs
+- event/message envelopes: wire payload in the dict, dispatch helpers and runtime routing context outside it
+
+See [examples/ui_component_tree.py](examples/ui_component_tree.py) for a full
+end-to-end example of this pattern.
+
 ## Package Tour (Internal Modules)
 
 This section is an overview of the main internal modules and what functionality they implement.
 If you only need the user-facing API, skip to [Public API Reference](#public-api-reference).
 
+Several submodules are intentionally usable almost like small standalone
+packages. When you want the deeper, module-specific API rather than the
+high-level `modict` overview, jump directly to:
+- [modict/path_utils/README.md](modict/path_utils/README.md) for `Path` and path parsing/resolution
+- [modict/collections_utils/README.md](modict/collections_utils/README.md) for nested ops, deep traversal, diff/merge, and `Query`
+- [modict/typechecker/README.md](modict/typechecker/README.md) for runtime typing, coercion, and function decorators
+
+This main README stays focused on the unified user-facing story; the module
+READMEs are the deeper reference points once you start using those pieces more
+directly.
+
 ### `modict/core/` (the `modict` class)
+
+This is the glue layer that turns the subpackages into one coherent dict-first
+model object.
 
 Core behaviors implemented here:
 - dict subclass with attribute access (`m.key` ↔ `m["key"]`) while keeping Python attributes working
@@ -552,7 +825,9 @@ Core behaviors implemented here:
 
 ### `modict/collections_utils/` (nested structure utilities)
 
-This package is responsible for paths, nested operations, and deep traversal. See [modict/collections_utils/README.md](modict/collections_utils/README.md) and [modict/path_utils/README.md](modict/path_utils/README.md) for more details.
+This package is responsible for paths, nested operations, and deep traversal.
+For the full module-level API, see [modict/collections_utils/README.md](modict/collections_utils/README.md).
+Path parsing and representation details live separately in [modict/path_utils/README.md](modict/path_utils/README.md).
 
 - `_path.py`: `Path` / `PathNode` — JSONPath (RFC 9535) parsing and formatting via `jsonpath-ng`.
   - Path components can cache origin container references so `walk()` → `unwalk()` can distinguish `Mapping` vs `Sequence` structure without recreating arbitrary concrete container classes.
@@ -564,7 +839,7 @@ This package is responsible for paths, nested operations, and deep traversal. Se
 
 ### `modict/typechecker/` (runtime typing + coercion)
 
-See [modict/typechecker/README.md](modict/typechecker/README.md) for more details.
+For the full module-level API, see [modict/typechecker/README.md](modict/typechecker/README.md).
 
 - `TypeChecker`: checks values against `typing` hints and collection ABCs.
 - `Coercer`: best-effort conversions for common hints/containers.
@@ -572,29 +847,40 @@ See [modict/typechecker/README.md](modict/typechecker/README.md) for more detail
 
 ### `modict/model_api/` (field system)
 
-- `Field`, `Factory`, `Computed`: field descriptor types used by `modictMeta` during class creation.
+This is the internal field/validator/computed layer used by `modict` during
+class creation and validation. Most users should stay on the class-level
+helpers (`modict.field`, `modict.factory`, `@modict.validator`,
+`@modict.computed`) rather than importing this module directly.
+
+- `Field`, `Factory`, `Computed`, `Attribute`: field descriptor types used by `modictMeta` during class creation.
 - `Validator`, `ModelValidator`: signature adapters for common call styles (allow flexible validator signatures).
 - `build_fields_and_model_validators`: metaclass helper that collects fields and validators from a class dict.
 
 ## Public API Reference
 
-This section lists the public symbols exported by `modict` and the main methods on `modict` instances.
+This section lists the main convenience symbols exported by `modict` and the
+main methods on `modict` instances.
 
 ### Exports
 
-From `from modict import ...`:
+For most code, the normal import is just:
+
+```python
+from modict import modict
+```
+
+Advanced modules expose their richer surfaces directly:
+- `modict.path_utils`
+- `modict.collections_utils`
+- `modict.typechecker`
+- `modict.model_api`
+
+The root package keeps only the most common convenience symbols:
 
 - Data structure:
   - `modict`
-- Field system:
-  - `Field` (advanced; most users should prefer `modict.field(...)`)
-  - `Factory` (advanced; most users should prefer `modict.factory(...)`)
-  - `Computed` (advanced; most users should prefer `@modict.computed(...)`)
-  - `Validator`, `ModelValidator` (advanced; decorators are the typical entry-point)
-- Config:
-  - `modictConfig` (usually created via `modict.config(...)`)
 - JSONPath types:
-  - `Path`, `PathNode`
+  - `Path`
 - Sentinel:
   - `MISSING`
 - Search:
@@ -604,15 +890,15 @@ From `from modict import ...`:
   - `coerce(value, hint)`
   - `can_coerce(value, hint)`
   - `typechecked` (decorator)
-  - `TypeChecker`
-  - `Coercer`
   - Exceptions: `TypeCheckError`, `TypeCheckException`, `TypeCheckFailureError`, `TypeMismatchError`, `CoercionError`
 
 ### `modict` class methods
 
-- `modict.config(**kwargs) -> modictConfig`
-- `modict.field(...) -> Field`
-- `modict.factory(callable) -> Factory`
+  - `modict.config(**kwargs) -> modictConfig`
+  - `modict.field(...) -> Field`
+  - `modict.factory(callable) -> Factory`
+  - `modict.attr(value) -> Attribute`
+- `modict.wrap(*wrap_args, **wrap_kwargs) -> callable`
 - `@modict.validator(field_name, mode="before"|"after")`
 - `@modict.model_validator(mode="before"|"after")`
 - `@modict.computed(cache=False, deps=None)`
@@ -630,6 +916,10 @@ Instance methods keep standard dict behavior, plus:
 
 - Validation:
   - `validate()`
+- Runtime attrs:
+  - `set_attr(name, value) -> None`
+  - `has_attr(name) -> bool`
+  - `del_attr(name) -> None`
 - Conversion:
   - `to_modict() -> modict` (deep conversion)
   - `to_dict() -> dict` (deep unconvert)

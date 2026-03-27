@@ -29,8 +29,7 @@ class modictConfig(BaseConfig):
 
     Attributes:
        check_values: Controls whether modict enforces its validation/processing pipeline:
-           - 'auto' (default): enable when the class looks "model-like" (has hints/validators/config constraints)
-           - True: always enable the pipeline
+           - True (default): enable when the class looks "model-like" (has hints/validators/config constraints)
            - False: bypass validation entirely (dict-like behavior)
 
        # modict-specific fields
@@ -43,8 +42,7 @@ class modictConfig(BaseConfig):
        require_all: If True, require presence of all declared (non-computed) class fields
                     at initialization time (annotation-only fields become required).
        check_keys: Controls whether modict enforces key-level structural constraints:
-           - 'auto' (default): enabled when the model declares key constraints (extra/require_all/required/computed)
-           - True: always enforce key-level constraints
+           - True (default): enabled when the model declares key constraints (extra/require_all/required/computed)
            - False: bypass key-level constraints (dict-like keys)
        evaluate_computed: If False, do not evaluate Computed fields on access; treat them
                          as raw stored objects (pure storage mode).
@@ -68,8 +66,8 @@ class modictConfig(BaseConfig):
     auto_convert: bool = True
     override_computed: bool = False
     require_all: bool = False
-    check_keys: bool | Literal["auto"] = "auto"
-    check_values: bool | Literal["auto"] = "auto"
+    check_keys: bool = True
+    check_values: bool = True
     evaluate_computed: bool = True
 
     # Pydantic-aligned (actively used)
@@ -176,11 +174,12 @@ class modictItemsView(ItemsView):
 class modictMeta(type):
 
     def __new__(mcls, name, bases, dct):
-        fields, model_validators = build_fields_and_model_validators(name, bases, dct)
+        fields, model_validators, attributes = build_fields_and_model_validators(name, bases, dct)
 
         # Store fields in __fields__
         dct['__fields__'] = fields
         dct["__model_validators__"] = tuple(model_validators)
+        dct["__attributes__"] = attributes
 
         # Setup _config using modictConfig with proper MRO merging
 

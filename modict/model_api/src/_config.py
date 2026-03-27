@@ -30,12 +30,12 @@ class Config:
         field_names = {f.name for f in fields(cls) if f.init and f.name != "_explicit"}
         if "check_values" in kwargs and "check_values" in field_names:
             cv = kwargs["check_values"]
-            if cv not in (True, False, "auto"):
-                raise TypeError("check_values must be True, False, or 'auto'")
+            if not isinstance(cv, bool):
+                raise TypeError("check_values must be True or False")
         if "check_keys" in kwargs and "check_keys" in field_names:
             ck = kwargs["check_keys"]
-            if ck not in (True, False, "auto"):
-                raise TypeError("check_keys must be True, False, or 'auto'")
+            if not isinstance(ck, bool):
+                raise TypeError("check_keys must be True or False")
 
     def __init__(self, **kwargs: Any):
         normalized = type(self)._normalize_kwargs(dict(kwargs))
@@ -68,10 +68,10 @@ class Config:
             object.__setattr__(self, name, value)
             return
 
-        if name == "check_values" and value not in (True, False, "auto"):
-            raise TypeError("check_values must be True, False, or 'auto'")
-        if name == "check_keys" and value not in (True, False, "auto"):
-            raise TypeError("check_keys must be True, False, or 'auto'")
+        if name == "check_values" and not isinstance(value, bool):
+            raise TypeError("check_values must be True or False")
+        if name == "check_keys" and not isinstance(value, bool):
+            raise TypeError("check_keys must be True or False")
 
         field_names = {f.name for f in fields(type(self)) if f.init}
         if name in field_names:

@@ -149,7 +149,7 @@ def test_validate_default_no_default():
 def test_validate_default_with_computed():
     """Test that Computed defaults are skipped."""
 
-    from modict import Computed
+    from modict.model_api import Computed
 
     class Config(modict):
         _config = modict.config(validate_default=True)
@@ -163,7 +163,7 @@ def test_validate_default_with_computed():
 def test_validate_default_with_factory():
     """Test that Factory defaults are skipped."""
 
-    from modict import Factory
+    from modict.model_api import Factory
 
     class Config(modict):
         _config = modict.config(validate_default=True)
