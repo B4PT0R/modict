@@ -1,36 +1,48 @@
 # modict
 
-`modict` (short for `modern dict` or `model dict`) is a Python `dict` subclass with an optional model-like layer: typed fields, defaults, factories, validators, computed values, and a full set of deep nested operations.
+A Python `dict` subclass with an optional model layer — typed fields, validators, computed values, and deep nested operations — that stays a real `dict` throughout.
 
-It stays a real `dict` throughout — every standard dict method works, and modict instances are accepted everywhere a `dict` or `Mapping` is expected, without conversion.
+```python
+from modict import modict
 
-## Why not just use…
+# start free-form ...
+u = modict(name="Alice", age=30)
 
-**`dict`** — Great for free-form data, but no types, no validation, no computed fields, no deep ops. You end up reimplementing the same helpers everywhere.
+# ... then consolidate the data model progressively
+class User(modict):
+    name: str
+    age: int = 0
 
-**`dataclass`** — Clean syntax for typed containers, but not a `dict`: you need `dataclasses.asdict()` at every boundary, no runtime type checking, no coercion, no computed fields with cache invalidation, no extra keys, no nested ops.
+    @modict.computed(deps=["name"])
+    def greeting(self):
+        return f"Hello, {self.name}!"
 
-**`TypedDict`** — A static typing annotation, not a runtime object. No behavior, no defaults, no validators. Only useful for type checkers.
+u = User(name="Alice", age=30)
+u.greeting          # "Hello, Alice!"
+isinstance(u, dict) # True — always
+```
 
-**`Pydantic BaseModel`** — Excellent for strict data contracts and API modeling, but model-first: not a `dict` subclass, requires explicit `.model_dump()` conversion at boundaries, and is designed around validation-as-contract rather than mutable data manipulation.
+→ New here? Start with the [Quick Start](QUICKSTART.md).
 
-**`attrs`** — Similar expressiveness to dataclass for modeling, but again not a `dict`. Adds descriptors and slots but no nested ops, no JSONPath, no coercion pipeline.
+## Why modict
 
-`modict` occupies a different position: it's a **dict that can be progressively enriched**. Start with raw data, add structure as it stabilizes, keep full dict compatibility throughout. No conversion, no boundaries, no paradigm switch.
+Python gives you `dict` for flexible data and `dataclass` / Pydantic `BaseModel` for structured data — but not both at once. `dict` is universally accepted, is a regular mapping and serializes directly, but has no types, no validation, no computed fields. `dataclass` and Pydantic add the structure layer, but stop being dicts/mappings: you pay a conversion tax at every boundary — `dataclasses.asdict()`, `.model_dump()`, explicit serialization. `TypedDict` sits in between but is a static annotation only, with no runtime enforcement or defaults.
+
+`modict` fills that gap: it supports structure **and** remains a real `dict` — it passes `isinstance(x, dict)`, serializes directly to JSON, and works with any function expecting a mapping. You add typed fields, validators, and computed properties as you go the same way you'd subclass any Python class. Nothing breaks, nothing needs converting.
 
 ## When to use modict
 
-- **Config and settings**: typed defaults, computed derived values, merge/diff/patch between configs.
-- **JSON/API payloads**: parse directly with `modict.loads()`, navigate with JSONPath, validate selectively — no schema required upfront.
-- **ETL and data pipelines**: transform nested structures with `walk`/`unwalk`/`merge`, track changes with `diff`/`diffed`.
-- **Typed events and messages**: a `modict` subclass with `extra="forbid"` and `required=True` fields behaves like a `TypedDict` with runtime enforcement — and is still a plain dict you can pass directly to any serializer or bus.
-- **Prototyping**: start free-form, progressively add hints/validators/computed as your data shape stabilizes.
+- **Config and settings**: typed defaults, computed derived values, merge/diff/patch.
+- **JSON/API payloads**: parse with `modict.loads()`, navigate with JSONPath, validate selectively.
+- **ETL pipelines**: traverse with `walk`/`unwalk`, track changes with `diff`.
+- **Typed events**: `extra="forbid"` + `required=True` fields give lightweight runtime-enforced structure — still a plain dict at the boundary.
+- **Tree-shaped data**: model node hierarchies (components, ASTs, config trees) where each node carries its own logic and the whole structure stays natively serializable.
+- **Prototyping**: start free-form, add types and validators as the shape stabilizes.
 
 ## Contents
 
 - [Installation](#installation)
 - [Examples](#examples)
-- [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
 - [Field Definition](#field-definition)
 - [Factories](#factories)
@@ -59,6 +71,9 @@ Requirements:
 - Python 3.10+
 - JSONPath support relies on `jsonpath-ng` (the only external dependency)
 
+
+[↑ Back to top](#contents)
+
 ## Examples
 
 See [examples/README.md](examples/README.md) for a small set of practical,
@@ -68,9 +83,12 @@ end-to-end scripts covering:
 - adapting SDK / ORM objects with `from_attributes`
 - redaction / export flows with `Query`, `Path`, `walk`, and `unwalk`
 
-## Quick Start
 
-### Use it as a dict (default)
+[↑ Back to top](#contents)
+
+## Core Concepts
+
+A plain `modict` is just a dict with attribute access and nested ops:
 
 ```python
 from modict import modict
@@ -78,43 +96,38 @@ from modict import modict
 m = modict({"user": {"name": "Alice"}, "count": 1})
 
 assert m["count"] == 1
-assert m.user.name == "Alice"       # attribute access for keys
-
-m.extra = 123                       # extra keys are allowed by default
-assert isinstance(m, dict)          # True: modict is a real dict
+assert m.user.name == "Alice"  # attribute access for keys
+assert isinstance(m, dict)     # True — always
 ```
 
-### Define a typed modict class with defaults
+Subclass it to add typed fields and defaults:
 
 ```python
-from modict import modict
-
 class User(modict):
-    name: str            # annotation-only: not required, but validated/coerced if provided
+    name: str            # validated/coerced if provided, not required by default
     age: int = 25        # default value
-    country: str = "FR"  # another default (not passed at init)
+    country: str = "FR"
 
 u = User({"name": "Alice", "age": "30"})
-assert u.age == 30                  # best-effort coercion unless strict=True
-assert u.country == "FR"
+assert u.age == 30       # coerced from str
+assert u.country == "FR" # default applied
 ```
 
-Tip: Annotated fields without defaults are not required by default; they provide type validation/coercion when the key is present. Plain annotations and class defaults are enough for most fields. Use `modict.field(...)` when you need more control (required flag, explicit hint).
-
-`repr(modict)` shows the live user-facing view of the structure. Computed fields are evaluated for display and rendered as `Computed(current_value)` so they stay identifiable in console output.
-
-## Core Concepts
-
-- `modict` is a real `dict`: it supports standard dict operations and behaves like a mutable mapping.
-- A `modict` *class* can declare fields with type annotations and `modict.field(...)`.
-- The model-like behavior is controlled by the `_config` class attribute (a `modictConfig` dataclass):
+Model behavior is controlled via `_config`:
 
 ```python
-from modict import modict
-
 class User(modict):
-    _config = modict.config(extra="allow")  # see "Configuration (Deep Dive)" for full reference
+    _config = modict.config(extra="forbid", strict=True)
+    name: str
+    age: int = 25
 ```
+
+Annotated fields without defaults are not required — they are validated and coerced when present. Use `modict.field(required=True)` when you need enforcement. See `modict.field(...)` for full control over hint, default, and validators.
+
+`repr(modict)` shows the live user-facing view. Computed fields are evaluated for display and rendered as `Computed(current_value)`.
+
+
+[↑ Back to top](#contents)
 
 ## Field Definition
 
@@ -129,7 +142,7 @@ class User(modict):
 ```
 
 Use `modict.field(...)` when you need more explicit control over a field
-definition. It is the more expert/advanced form, not the default style:
+definition:
 
 ```python
 from modict import MISSING, modict
@@ -145,7 +158,7 @@ modict.field(
 `default=MISSING` is already the default behavior, so you usually do not need to
 write it explicitly.
 
-Example (explicit defaults):
+Example:
 
 ```python
 from modict import modict
@@ -159,6 +172,9 @@ assert u.age == 30
 ```
 
 Note: if you pass `hint=...` explicitly in `modict.field(...)`, it takes precedence over the class annotation.
+
+
+[↑ Back to top](#contents)
 
 ## Factories
 
@@ -176,6 +192,9 @@ u2 = User(name="Bob")
 u1.tags.append("python")
 assert u2.tags == []
 ```
+
+
+[↑ Back to top](#contents)
 
 ## Validators
 
@@ -218,6 +237,9 @@ class Range(modict):
         if values["start"] > values["end"]:
             raise ValueError("start must be <= end")
 ```
+
+
+[↑ Back to top](#contents)
 
 ## Computed Fields
 
@@ -301,6 +323,9 @@ assert m.sum == 12
 m.invalidate_computed()
 ```
 
+
+[↑ Back to top](#contents)
+
 ## Validation Pipeline
 
 The pipeline is controlled by `_config.check_values`:
@@ -327,6 +352,9 @@ Order of operations for a field value:
 5. JSON-serializability check (`enforce_json=True`, with optional encoders)
 
 If any step raises, the whole assignment is rejected.
+
+
+[↑ Back to top](#contents)
 
 ## Path-Based Tools
 
@@ -397,6 +425,9 @@ m.set_nested(
 - `unwalk(..., kind_resolver=...)` can refine the inferred structure per container path.
 - `ignore_types=True` remains available as a legacy mode to ignore `Path` hints and use only local key-shape heuristics.
 - `modict.unwalk(...)` then retypes the root mapping through the target class, so model validation/coercion can re-establish the desired root type.
+
+
+[↑ Back to top](#contents)
 
 ## Configuration (Deep Dive)
 
@@ -512,6 +543,9 @@ class C(A, B):
     # extra  → "forbid"  (only B set it, no conflict)
 ```
 
+
+[↑ Back to top](#contents)
+
 ## Type Checking & Coercion
 
 `modict` relies on its internal runtime type system (`modict/typechecker/`) for:
@@ -522,6 +556,9 @@ class C(A, B):
 This subsystem supports common `typing` constructs (`Union`, `Optional`, `list[str]`, `dict[str, int]`, `tuple[T, ...]`, ABCs from `collections.abc`, …).
 
 When coercion fails, the original value is kept; the subsequent type check then decides whether it's accepted (based on hints and `strict` mode). This means `strict=False` is permissive but not silent — type mismatches still raise if the hint doesn't match.
+
+
+[↑ Back to top](#contents)
 
 ## Serialization
 
@@ -607,6 +644,9 @@ event = Event(**data)  # pipeline runs: coercion, type checks, validators, ...
 
 For serialization beyond JSON (e.g. YAML, MessagePack), `to_jsonable(obj, encoders)` from `modict.collections_utils` recursively converts a structure to plain JSON-safe types (dicts, lists, primitives). This is what `dumps`/`dump` use internally.
 
+
+[↑ Back to top](#contents)
+
 ## Deep Conversion & Deep Ops
 
 ### Deep conversion
@@ -626,6 +666,9 @@ For serialization beyond JSON (e.g. YAML, MessagePack), `to_jsonable(obj, encode
 - `diff(mapping)`: deep diff — returns `{Path: (left, right)}` with `MISSING` for absent values.
 - `diffed(mapping)`: minimal nested patch — returns a plain modict containing only the changes needed so that `self.merge(self.diffed(other))` equals `other`. Keys removed in `other` are set to `MISSING`.
 - `deep_equals(mapping)`: deep equality by comparing walked representations (container types are ignored — a modict and a plain dict with the same leaves are equal). Use this when cross-type equality is needed; `==` uses the native dict comparison (type-sensitive).
+
+
+[↑ Back to top](#contents)
 
 ## Payload vs Runtime
 
@@ -787,6 +830,9 @@ constructor protocol.
 See [examples/ui_component_tree.py](examples/ui_component_tree.py) for a full
 end-to-end example of this pattern.
 
+
+[↑ Back to top](#contents)
+
 ## Package Tour (Internal Modules)
 
 This section is an overview of the main internal modules and what functionality they implement.
@@ -855,6 +901,9 @@ helpers (`modict.field`, `modict.factory`, `@modict.validator`,
 - `Field`, `Factory`, `Computed`, `Attribute`: field descriptor types used by `modictMeta` during class creation.
 - `Validator`, `ModelValidator`: signature adapters for common call styles (allow flexible validator signatures).
 - `build_fields_and_model_validators`: metaclass helper that collects fields and validators from a class dict.
+
+
+[↑ Back to top](#contents)
 
 ## Public API Reference
 
@@ -951,11 +1000,43 @@ Instance methods keep standard dict behavior, plus:
 - Computed cache:
   - `invalidate_computed(*names) -> None` (no args = all)
 
+
+[↑ Back to top](#contents)
+
 ## Development
+
+**Install in editable mode with dev dependencies:**
+
+```bash
+git clone https://github.com/B4PT0R/modict.git
+cd modict
+pip install -e ".[dev]"
+```
+
+This installs `modict` in editable mode along with `pytest`, `pytest-cov`, `pytest-html`, `flake8`, and `black`.
+
+**Run the test suite:**
 
 ```bash
 python3 -m pytest -q
 ```
+
+**Run with coverage:**
+
+```bash
+python3 -m pytest --cov=modict --cov-report=term-missing
+```
+
+**Lint and format:**
+
+```bash
+flake8 modict/
+black modict/
+```
+
+Tests are distributed across submodules (`modict/core/tests/`, `modict/typechecker/tests/`, etc.) and a top-level `tests/` directory for integration tests. All are discovered automatically by pytest.
+
+[↑ Back to top](#contents)
 
 ## Contributing
 
@@ -967,6 +1048,10 @@ Contributions are welcome.
 
 See `CONTRIBUTING.md` for details.
 
+[↑ Back to top](#contents)
+
 ## License
 
 MIT. See `LICENSE`.
+
+[↑ Back to top](#contents)

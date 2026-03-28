@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.6
+
+### Added
+- `QUICKSTART.md`: a narrative, example-driven introduction to modict for new users
+
+### Changed
+- README intro rewritten for clarity and conciseness: tighter positioning, cleaner "Why modict" paragraph, richer use-case descriptions
+- Development section now includes full local setup instructions
+
+### Fixed
+- Protocol compatibility hardened on older Python versions (3.10/3.11)
+- Cross-version typing and JSONPath compatibility fixes
+
 ## 0.4.5
 
 ### Added
