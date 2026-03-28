@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.7
+
+### Changed
+- `require_all` config option now accepts `"never"` | `"at_init"` | `"always"` instead of `bool`. Default changed from `False` to `"at_init"`: annotated fields without a default are now required at construction time but remain freely deletable afterwards. `True`/`False` still accepted for backward compat.
+- `modict.field(required=...)` follows the same three-level scale. The stronger constraint between field-level `required` and config-level `require_all` always wins.
+
+### Fixed
+- Deletion of declared fields is now only blocked when the effective required level is `"always"` — `"at_init"` fields can be freely removed after construction.
+
 ## 0.4.6
 
 ### Added

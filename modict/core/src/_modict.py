@@ -9,6 +9,18 @@ from ...model_api import (
     maybe_coerce,
 )
 from ._modict_meta import modictMeta, Factory, Computed, modictItemsView,modictKeysView,modictValuesView, modictConfig
+from ...model_api.src._field import _normalize_required, _REQUIRED_ORDER
+
+
+def _effective_required(field_required, require_all) -> str:
+    """Return the stronger of field_required and require_all.
+
+    Both arguments are normalized to RequiredLevel strings first.
+    Strength order: "always" > "at_init" > "never".
+    """
+    a = _normalize_required(field_required)
+    b = _normalize_required(require_all)
+    return max(a, b, key=lambda x: _REQUIRED_ORDER[x])
 from ...path_utils import Path, ResolutionError
 from ...collections_utils import (
     keys,
@@ -132,7 +144,7 @@ class modict(dict, metaclass=modictMeta):
         *,
         default=MISSING,
         hint=None,
-        required: Optional[bool] = None,
+        required: Optional[Union[bool, Literal["always", "at_init", "never"]]] = None,
         validators=None,
     ):
         """Convenience factory for Field(...) without importing Field directly.
@@ -140,7 +152,7 @@ class modict(dict, metaclass=modictMeta):
         from ._modict_meta import Field as ModictField
         f = ModictField(default=default, hint=hint)
         if required is not None:
-            f.required = bool(required)
+            f.required = _normalize_required(required)
         if validators is not None:
             f.validators = list(validators)
         return f
@@ -383,7 +395,7 @@ class modict(dict, metaclass=modictMeta):
         if not config.check_keys:
             return False
 
-        if config.require_all or config.extra != "allow":
+        if config.require_all != "never" or config.extra != "allow":
             return True
 
         cls = type(self)
@@ -423,16 +435,15 @@ class modict(dict, metaclass=modictMeta):
         if not self._check_keys_enabled():
             return
         fields = getattr(self, "__fields__", {}) or {}
-        require_all = bool(getattr(self._config, "require_all", False))
+        require_all = getattr(self._config, "require_all", "never")
         for name, field in fields.items():
-            is_required = bool(getattr(field, "required", False))
-            if require_all:
-                is_required = True
-            if not is_required:
+            effective = _effective_required(getattr(field, "required", "never"), require_all)
+            # "at_init" and "always" both require presence at construction / validate() time
+            if effective == "never":
                 continue
             # Computed fields aren't populated from input, but they are still part of the
-            # instance dict (stored as Computed objects). If require_all=True (or if the
-            # field was explicitly marked required), ensure the key exists.
+            # instance dict (stored as Computed objects). If the field is required, ensure
+            # the key exists.
             if name not in self:
                 raise KeyError(f"Missing required field '{name}'")
 
@@ -839,9 +850,14 @@ class modict(dict, metaclass=modictMeta):
         self._check_mutable("delete", key=key)
         check_keys_enabled = self._check_keys_enabled()
         if check_keys_enabled:
-            # If require_all=True, declared fields must always be present.
-            if bool(getattr(self._config, "require_all", False)) and key in getattr(self, "__fields__", {}):
-                raise TypeError(f"Cannot delete declared field '{key}' (require_all=True)")
+            # Only block deletion for fields whose effective required level is "always".
+            fields = getattr(self, "__fields__", {})
+            if key in fields:
+                require_all = getattr(self._config, "require_all", "never")
+                field_required = getattr(fields[key], "required", "never")
+                effective = _effective_required(field_required, require_all)
+                if effective == "always":
+                    raise TypeError(f"Cannot delete declared field '{key}' (effective required='always')")
             existing = dict.get(self, key, MISSING)
             if isinstance(existing, Computed) and not getattr(self._config, "override_computed", False):
                 raise TypeError(f"Cannot delete computed field '{key}' (override_computed=False)")
@@ -1052,12 +1068,15 @@ class modict(dict, metaclass=modictMeta):
     def clear(self):
         self._check_mutable("clear")
         check_keys_enabled = self._check_keys_enabled()
-        if (
-            check_keys_enabled
-            and bool(getattr(self._config, "require_all", False))
-            and getattr(self, "__fields__", None)
-        ):
-            raise TypeError("Cannot clear a model with require_all=True")
+        if check_keys_enabled and getattr(self, "__fields__", None):
+            require_all = getattr(self._config, "require_all", "never")
+            fields = self.__fields__
+            has_always_field = any(
+                _effective_required(getattr(f, "required", "never"), require_all) == "always"
+                for f in fields.values()
+            )
+            if has_always_field:
+                raise TypeError("Cannot clear a model with fields that have effective required='always'")
         if (
             check_keys_enabled
             and not getattr(self._config, "override_computed", False)

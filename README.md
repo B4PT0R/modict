@@ -22,7 +22,9 @@ u.greeting          # "Hello, Alice!"
 isinstance(u, dict) # True — always
 ```
 
-→ New here? Start with the [Quick Start](QUICKSTART.md).
+## Quickstart
+
+New to modict? **[QUICKSTART.md](QUICKSTART.md)** walks you through the full feature set step by step, from a plain dict to a fully typed model with validators and computed fields.
 
 ## Why modict
 
@@ -41,6 +43,7 @@ Python gives you `dict` for flexible data and `dataclass` / Pydantic `BaseModel`
 
 ## Contents
 
+- [Quickstart](#quickstart)
 - [Installation](#installation)
 - [Examples](#examples)
 - [Core Concepts](#core-concepts)
@@ -104,7 +107,7 @@ Subclass it to add typed fields and defaults:
 
 ```python
 class User(modict):
-    name: str            # validated/coerced if provided, not required by default
+    name: str            # validated/coerced if provided; required at init by default (require_all="at_init")
     age: int = 25        # default value
     country: str = "FR"
 
@@ -122,7 +125,10 @@ class User(modict):
     age: int = 25
 ```
 
-Annotated fields without defaults are not required — they are validated and coerced when present. Use `modict.field(required=True)` when you need enforcement. See `modict.field(...)` for full control over hint, default, and validators.
+> [!NOTE]
+> Annotated fields without a default are required at construction time by default (`require_all="at_init"`), but can be freely deleted or popped afterwards — modict stays a mutable dict. Use `modict.field(required="always")` or `_config = modict.config(require_all="always")` to enforce presence as a permanent invariant. Use `require_all="never"` to make all fields fully optional.
+
+Use `modict.field(...)` for full control over hint, default, and validators.
 
 `repr(modict)` shows the live user-facing view. Computed fields are evaluated for display and rendered as `Computed(current_value)`.
 
@@ -150,7 +156,7 @@ from modict import MISSING, modict
 modict.field(
     default=MISSING,  # default value (MISSING means "no default value")
     hint=None,       # type hint, None = use class annotation when provided
-    required=False,  # whether the field is required
+    required="never",  # "never" | "at_init" | "always" (True → "always", False → "never")
     validators=None, # internal: used by the metaclass when collecting @modict.validator(...)
 )
 ```
@@ -483,12 +489,13 @@ class Msg(modict):
 - `validate_default`: when `True`, default field values are type-checked at class creation time (skips `Factory`/`Computed`).
 - `from_attributes`: when `True`, `MyModict(obj)` can read declared fields from `obj.field` attributes (when `obj` is not a mapping).
 - `override_computed`: when `False` (default), computed fields are protected at runtime: you cannot overwrite or delete them on an existing instance. During model construction/casting, class-declared computed fields still win over incoming values so the target model contract is preserved.
-- `require_all`: when `True`, all declared class fields must be present at initialization; annotation-only fields become required and cannot be deleted.
+- `require_all`: controls the required level for all declared fields. Accepts `"never"` | `"at_init"` | `"always"` (or `bool` for backward compat). Default: `"at_init"`. The field-level `required` and `require_all` interact by taking the stronger constraint (`"always"` > `"at_init"` > `"never"`).
 - `evaluate_computed`: when `True` (default), computed fields are evaluated on access. When `False`, the `Computed` object itself is returned (pure storage mode, no evaluation).
 
 Required vs defaults (dict-first semantics):
-- A class default (e.g. `age: int = 25`) is an *initializer*: injected once at construction if missing, but still removable later when `require_all=False`.
-- A field is an invariant only when you opt in: set `required=True` on the field (or `require_all=True` on the model) to enforce presence.
+- A class default (e.g. `age: int = 25`) is an *initializer*: injected once at construction if missing, always removable afterwards.
+- `"at_init"` (default): field must be provided at construction, but can be deleted freely after — dict mutability is preserved.
+- `"always"`: field is a permanent invariant — deletion is blocked. Opt in explicitly via `modict.field(required="always")` or `require_all="always"`.
 
 ### Performance / dict-like mode
 
@@ -660,11 +667,13 @@ For serialization beyond JSON (e.g. YAML, MessagePack), `to_jsonable(obj, encode
 
 ### Deep operations on nested structures
 
+> **Naming convention**: verb form (`walk`, `find`, `diff`) returns a lazy generator or flat inspection dict; past-participle form (`walked`, `found`, `diffed`) returns the result materialized — as a `{Path: value}` modict or a nestable patch ready for `merge()`.
+
 - `walk()` / `walked()`: flatten a nested structure to `(Path, value)` pairs.
 - `unwalk(walked, *, kind_resolver=None)`: reconstruct a nested structure from a `{Path: value}` mapping using structural `dict` / `list` containers, with an optional hook to refine inferred `mapping` / `sequence` kinds per path. The root can then be recast through `modict.unwalk(...)`.
 - `merge(mapping)`: deep, in-place merge (mappings merge by key; sequences merge by index). Returns `None` — modifies in place.
-- `diff(mapping)`: deep diff — returns `{Path: (left, right)}` with `MISSING` for absent values.
-- `diffed(mapping)`: minimal nested patch — returns a plain modict containing only the changes needed so that `self.merge(self.diffed(other))` equals `other`. Keys removed in `other` are set to `MISSING`.
+- `diff(mapping)`: deep diff — returns a flat `{Path: (left_value, right_value)}` dict.
+- `diffed(mapping)`: minimal nested patch — a modict shaped so that `self.merge(self.diffed(other))` equals `other`. Keys removed in `other` are set to `MISSING`.
 - `deep_equals(mapping)`: deep equality by comparing walked representations (container types are ignored — a modict and a plain dict with the same leaves are equal). Use this when cross-type equality is needed; `==` uses the native dict comparison (type-sensitive).
 
 
@@ -985,8 +994,8 @@ Instance methods keep standard dict behavior, plus:
   - `translate(mapping_or_kwargs) -> modict` (returns a plain translated modict)
   - `exclude(*keys) -> modict`
   - `extract(*keys) -> modict`
-  - `find(query=MISSING, *, path_constraint=MISSING, value_constraint=MISSING) -> Generator` — lazily yields `(Path, value)` pairs matching a `Query` or inline constraints (deep)
-  - `found(query=MISSING, *, path_constraint=MISSING, value_constraint=MISSING) -> modict` — same, returned as a `{Path: value}` modict
+  - `find(query=MISSING, *, path_constraint=MISSING, value_constraint=MISSING) -> Generator`
+  - `found(query=MISSING, *, path_constraint=MISSING, value_constraint=MISSING) -> modict`
 - Deep operations:
   - `merge(mapping) -> None` (in-place)
   - `update(other=(), /, **kwargs) -> None` — like `dict.update()` but routes through validation

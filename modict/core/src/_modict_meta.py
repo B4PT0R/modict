@@ -1,5 +1,5 @@
 from collections.abc import ValuesView, ItemsView, KeysView
-from typing import Any, Callable, Dict, Literal, Optional, Type
+from typing import Any, Callable, Dict, Literal, Optional, Type, Union
 from types import FunctionType
 from ...collections_utils import MISSING
 from dataclasses import dataclass
@@ -39,8 +39,12 @@ class modictConfig(BaseConfig):
                          During model instantiation/casting, class-declared computed
                          fields still override incoming values to preserve the target
                          model contract.
-       require_all: If True, require presence of all declared (non-computed) class fields
-                    at initialization time (annotation-only fields become required).
+       require_all: Controls the required level for all declared (non-computed) class fields.
+                    Accepts "always", "at_init", "never", or bool (True → "always", False → "never").
+                    - "never": fields are optional (dict-like behavior)
+                    - "at_init": fields must be present at construction, but can be deleted afterwards
+                    - "always": fields must always be present; deletion is blocked
+                    The field-level `required` and `require_all` interact by taking the stronger constraint.
        check_keys: Controls whether modict enforces key-level structural constraints:
            - True (default): enabled when the model declares key constraints (extra/require_all/required/computed)
            - False: bypass key-level constraints (dict-like keys)
@@ -65,7 +69,7 @@ class modictConfig(BaseConfig):
     # modict-specific
     auto_convert: bool = True
     override_computed: bool = False
-    require_all: bool = False
+    require_all: Literal["always", "at_init", "never"] = "at_init"
     check_keys: bool = True
     check_values: bool = True
     evaluate_computed: bool = True
@@ -85,6 +89,14 @@ class modictConfig(BaseConfig):
 
     @classmethod
     def _normalize_kwargs(cls, kwargs: dict[str, Any]) -> dict[str, Any]:
+        # Normalize require_all bool → string enum
+        if 'require_all' in kwargs:
+            val = kwargs['require_all']
+            if val is True:
+                kwargs['require_all'] = 'always'
+            elif val is False:
+                kwargs['require_all'] = 'never'
+
         # Deprecated: coerce -> strict
         if 'coerce' in kwargs:
             warnings.warn(
@@ -185,7 +197,7 @@ class modictMeta(type):
             bool(getattr(field, "validators", ())) for field in fields.values()
         )
         dct["__has_required_fields__"] = any(
-            bool(getattr(field, "required", False)) for field in fields.values()
+            getattr(field, "required", "never") != "never" for field in fields.values()
         )
         dct["__has_declared_computed_fields__"] = any(
             isinstance(getattr(field, "default", None), Computed) for field in fields.values()

@@ -142,6 +142,7 @@ def test_computed_annotation_hint_does_not_conflict_with_storage():
 
 def test_dynamic_computed_on_declared_field_uses_model_hint_in_lax_mode():
     class WithDeclaredComputedSlot(modict):
+        _config = modict.config(require_all="never")
         total: int
 
     m = WithDeclaredComputedSlot()
@@ -153,7 +154,7 @@ def test_dynamic_computed_on_declared_field_uses_model_hint_in_lax_mode():
 
 def test_dynamic_computed_on_declared_field_uses_model_hint_in_strict_mode():
     class StrictComputedSlot(modict):
-        _config = modict.config(strict=True)
+        _config = modict.config(strict=True, require_all="never")
         total: int
 
     m = StrictComputedSlot()
@@ -470,6 +471,7 @@ def test_computed_instance_level_assignment():
 
     # Cas 1: Champ avec annotation de classe, computed assigné à l'instance
     class Calculator(modict):
+        _config = modict.config(require_all="never")
         result: float  # Le contrat : result doit être un float
         a: int = 1
         b: int = 2
@@ -644,18 +646,46 @@ def test_field_required_via_modict_field_default_missing():
     assert u.name == "Alice"
 
 
-def test_field_required_param_overrides_default():
+def test_field_required_never_with_require_all_never():
+    """Field required="never" makes the field optional when require_all is also "never"."""
     from modict import MISSING
 
     class UserOptional(modict):
-        name: str = modict.field(default=MISSING, required=False)
+        _config = modict.config(require_all="never")
+        name: str = modict.field(default=MISSING, required="never")
 
     u = UserOptional({})
     assert "name" not in u
 
 
-def test_annotation_only_field_is_not_required_by_default():
+def test_field_required_always_overrides_require_all_never():
+    """Field required="always" wins over require_all="never" (stronger constraint wins)."""
+    from modict import MISSING
+
+    class UserStrict(modict):
+        _config = modict.config(require_all="never")
+        name: str = modict.field(default=MISSING, required="always")
+
+    with pytest.raises(KeyError):
+        UserStrict({})
+
+
+def test_annotation_only_field_is_required_at_init_by_default():
+    """Default require_all="at_init" makes annotation-only fields required at construction."""
     class User(modict):
+        name: str
+
+    with pytest.raises(KeyError):
+        User({})
+
+    u = User({"name": "Alice"})
+    assert u.name == "Alice"
+
+
+def test_annotation_only_field_not_required_when_require_all_never():
+    """Setting require_all="never" makes annotation-only fields optional."""
+    class User(modict):
+        _config = modict.config(require_all="never")
         name: str
 
     u = User({})

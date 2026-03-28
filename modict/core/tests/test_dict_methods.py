@@ -341,7 +341,7 @@ class TestSetdefault:
         class PartialTyped(modict):
             x: int
             z: int
-            _config = modict.config(validate_assignment=True)
+            _config = modict.config(validate_assignment=True, require_all="never")
 
         m = PartialTyped(x=1)
         v = m.setdefault("z", "5")

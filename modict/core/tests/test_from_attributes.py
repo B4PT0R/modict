@@ -53,7 +53,7 @@ def test_from_attributes_disabled_does_not_accept_object():
 
 def test_from_attributes_skips_properties_that_raise_attributeerror():
     class User(modict):
-        _config = modict.config(from_attributes=True)
+        _config = modict.config(from_attributes=True, require_all="never")
         name: str
         age: int
 
