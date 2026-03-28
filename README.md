@@ -335,9 +335,8 @@ m.invalidate_computed()
 ## Validation Pipeline
 
 The pipeline is controlled by `_config.check_values`:
-- `check_values="auto"` (default): enabled when the class looks model-like (has hints, validators, or relevant config).
-- `check_values=True`: always enabled.
-- `check_values=False`: bypassed (pure dict behavior).
+- `check_values=True` (default): active only when the class looks model-like (has hints, validators, or relevant config) — early exit otherwise.
+- `check_values=False`: bypassed entirely (pure dict behavior).
 
 Related config flags:
 - `strict`: when `True`, no coercion is attempted — values must already match the declared type.
@@ -445,7 +444,7 @@ from modict import modict
 
 class User(modict):
     _config = modict.config(
-        check_values="auto",
+        check_values=True,
         extra="allow",
         strict=False,
         validate_assignment=True,  # default
@@ -455,12 +454,13 @@ class User(modict):
 
 ### Config reference
 
-- `check_values`: `True`/`False`/`"auto"`.
-  - `"auto"` enables the pipeline when the class *looks model-like*: it has hints, validators, model validators, or config constraints (e.g. `extra != "allow"`, `enforce_json=True`, `strict=True`, …).
-- `check_keys`: `True`/`False`/`"auto"`.
+- `check_values`: `True` (default) / `False`.
+  - `True`: active only when the class looks model-like (has hints, validators, model validators, or config constraints like `extra != "allow"`, `enforce_json=True`, `strict=True`) — early exit otherwise.
+  - `False`: bypassed entirely (pure dict behavior, no coercion or type checking).
+- `check_keys`: `True` (default) / `False`.
   - Key-level constraints are *structural* checks (presence/allowed-keys/invariants), separate from value validation.
-  - `"auto"` enables key constraints when the model declares them (e.g. `extra != "allow"`, `require_all=True`, computed fields, or any field with `required=True`).
-  - When `False`, `modict` behaves more like a plain dict regarding keys: `required=True`, `require_all=True`, `extra="forbid"/"ignore"`, and computed overwrite/delete protection are all skipped.
+  - `True`: active only when the model declares key constraints (`extra != "allow"`, `require_all != "never"`, computed fields, or any field with `required != "never"`) — early exit otherwise.
+  - `False`: bypassed entirely — `required`, `require_all`, `extra="forbid"/"ignore"`, and computed overwrite/delete protection are all skipped.
   - `frozen=True` is always enforced regardless of `check_keys`.
 
 Example: keep structure strict but skip value coercion/type checking:

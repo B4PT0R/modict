@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.8
+
+### Changed
+- `check_values` and `check_keys` config options no longer accept `"auto"` — the smart early-exit behavior is now always active when the option is `True` (default). The accepted values are simply `True` (default, with early exit when no constraints apply) and `False` (bypass entirely). Documentation and docstrings updated accordingly.
+
 ## 0.4.7
 
 ### Changed
