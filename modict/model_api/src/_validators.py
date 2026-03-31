@@ -39,7 +39,7 @@ class Validator:
 class ModelValidator:
     """Model-level validator (multi-field invariants).
 
-    Expected signature: `(self, values) -> None|Mapping|self`.
+    Expected signature: `(self) -> None`.
     """
 
     def __init__(self, func: Callable, *, mode: Literal["before", "after"] = "after"):
@@ -47,12 +47,9 @@ class ModelValidator:
         self.mode = mode
         _validate_signature(
             func,
-            "Invalid model validator signature. Expected: (self, values)",
+            "Invalid model validator signature. Expected: (self)",
             object(),
-            {},
         )
 
     def __call__(self, instance, *, values=None, cls=None, info=None):
-        if values is None and instance is not None:
-            values = dict(instance)
-        return self.func(instance, values)
+        return self.func(instance)

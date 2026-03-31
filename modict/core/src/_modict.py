@@ -117,7 +117,7 @@ class modict(dict, metaclass=modictMeta):
                 age: int
 
         Args:
-            check_values: Enable/disable modict's validation pipeline (True/False/'auto')
+            check_values: Enable/disable modict's validation pipeline (True/False)
             auto_convert: Automatically convert nested dicts to modicts
             extra: Control extra attributes ('allow', 'forbid', 'ignore')
             strict: Pydantic-like strict mode (no coercion)
@@ -215,14 +215,15 @@ class modict(dict, metaclass=modictMeta):
     def model_validator(cls, func=None, *, mode: Literal["before", "after"] = "after"):
         """Decorator to create model-level validators (multi-field invariants).
 
-        Model validators run in two phases:
-        - mode="before": runs before field coercion/type checking
-        - mode="after": runs after field validation (Pydantic-like)
+        Expected signature: ``(self) -> None | Mapping | self``
 
-        The decorated callable may:
-        - mutate the instance in place and return None
-        - return a Mapping of updates (applied to the instance)
-        - return the instance itself (ignored)
+        Model validators run in two phases relative to field-level validators and
+        coercion/type-checking:
+        - mode="before": runs after individual field validators "before", before coercion
+        - mode="after": runs after individual field validators "after", after coercion
+
+        In both modes the decorated function receives the live instance and must
+        mutate it in place. The return value is ignored.
         """
         if func is None:
             def decorator(f):
@@ -520,36 +521,15 @@ class modict(dict, metaclass=modictMeta):
         if not validators:
             return
 
-        from collections.abc import Mapping as AbcMapping
-
-        for validator in validators:
-            if getattr(validator, "mode", "after") != mode:
-                continue
-
-            result = validator(self)
-            if result is None or result is self:
-                continue
-            if isinstance(result, AbcMapping):
-                if mode == "before":
-                    # Apply raw updates; field validation will happen afterwards.
-                    self._raw_clear()
-                    for key, value in result.items():
-                        self._raw_setitem(key, value)
-                else:
-                    # Apply updates through the normal assignment policy so key
-                    # constraints, computed protection, and cache invalidation
-                    # remain consistent even when validate_assignment=False.
-                    validate_value = self._check_values_enabled()
-                    for key, value in result.items():
-                        self._store_item(
-                            key,
-                            value,
-                            validate_value=validate_value,
-                        )
-                continue
-            raise TypeError(
-                f"model_validator must return None, self, or a Mapping; got {type(result).__name__}"
-            )
+        depth = getattr(self, "_in_model_validator", 0)
+        object.__setattr__(self, "_in_model_validator", depth + 1)
+        try:
+            for validator in validators:
+                if getattr(validator, "mode", "after") != mode:
+                    continue
+                validator(self)
+        finally:
+            object.__setattr__(self, "_in_model_validator", depth)
 
     def _check_value(self, key, value, hint=None):
         """Consolidate all validation: validators + type checking.
@@ -763,19 +743,35 @@ class modict(dict, metaclass=modictMeta):
 
     def _store_item(self, key, value, *, validate_value: bool) -> None:
         self._check_mutable("assign", key=key)
+
+        # Inside a model_validator the full pipeline is suspended: the validator
+        # has authority over the instance and is responsible for correctness.
+        # Assignments go straight to raw storage + dependant invalidation.
+        if getattr(self, "_in_model_validator", 0):
+            self._raw_setitem(key, value)
+            self._invalidate_dependants({key})
+            return
+
+        # Computed objects bypass the normal value-validation pipeline, but still
+        # respect override_computed — except when storing the exact same object
+        # that is already there (no-op echo from a model_validator snapshot).
+        if isinstance(value, Computed):
+            existing_raw = dict.get(self, key, MISSING)
+            if existing_raw is value:
+                return  # Same Computed object — pure no-op, skip everything.
+            check_keys_enabled = self._check_keys_enabled()
+            if check_keys_enabled and isinstance(existing_raw, Computed) and not getattr(self._config, "override_computed", False):
+                raise TypeError(f"Cannot override computed field '{key}' (override_computed=False)")
+            self._raw_setitem(key, value)
+            self._invalidate_dependants({key})
+            return
+
         check_keys_enabled = self._check_keys_enabled()
         should_store = self._enforce_assignment_policy(key, value, check_keys_enabled=check_keys_enabled)
         if not should_store:
             return
 
         existing = dict.get(self, key, MISSING)
-
-        # Computed objects are stored raw — no validation, but they still
-        # replace the logical value behind this key and must invalidate dependants.
-        if isinstance(value, Computed):
-            self._raw_setitem(key, value)
-            self._invalidate_dependants({key})
-            return
 
         # Fast path: if the raw stored value is already the same object or the
         # same concrete value, skip validation/coercion and cache invalidation.

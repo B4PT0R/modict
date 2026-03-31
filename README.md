@@ -229,7 +229,10 @@ assert u.email == "alice@example.com"
 
 Use `@modict.model_validator(mode="before"|"after")` for checks that span multiple fields.
 
-In `mode="after"`, the instance is already fully populated and all field validators have run. The method receives `(self, values)` where `values` is the final dict of field values.
+The method receives only the live instance (`self`) and mutates it in place. The validation pipeline is **suspended** during execution — field validators, type coercion, and key constraints do not apply to assignments made inside the method. The validator has full authority.
+
+- `mode="before"` — runs after individual field validators `"before"`, before coercion/type-checking
+- `mode="after"` — runs after individual field validators `"after"`, after coercion/type-checking
 
 ```python
 from modict import modict
@@ -239,8 +242,8 @@ class Range(modict):
     end: int
 
     @modict.model_validator(mode="after")
-    def check_order(self, values):
-        if values["start"] > values["end"]:
+    def check_order(self):
+        if self["start"] > self["end"]:
             raise ValueError("start must be <= end")
 ```
 

@@ -112,8 +112,8 @@ def test_model_validator_and_computed_together():
         area: float = Computed(lambda self: self.width * self.height)
 
         @md.model_validator(mode="after")
-        def positive_dimensions(self, values):
-            if values["width"] <= 0 or values["height"] <= 0:
+        def positive_dimensions(self):
+            if self["width"] <= 0 or self["height"] <= 0:
                 raise ValueError("dimensions must be positive")
             return None
 
@@ -124,17 +124,19 @@ def test_model_validator_and_computed_together():
         Rectangle(width=-1.0, height=4.0)
 
 
-def test_after_model_validator_respects_extra_policy():
+def test_after_model_validator_bypasses_extra_policy():
+    """Inside a model_validator the pipeline is suspended: the validator has full
+    authority and assignments bypass extra/computed/type constraints."""
     class StrictModel(md):
         _config = md.config(extra="forbid")
         x: int
 
         @md.model_validator(mode="after")
-        def inject_extra(self, values):
-            return {"x": values["x"], "oops": 2}
+        def inject_extra(self):
+            self["oops"] = 2
 
-    with pytest.raises(KeyError):
-        StrictModel(x=1)
+    m = StrictModel(x=1)
+    assert m["oops"] == 2
 
 
 def test_after_model_validator_invalidates_computed_dependants():
@@ -146,12 +148,78 @@ def test_after_model_validator_invalidates_computed_dependants():
             return self.a * 2
 
         @md.model_validator(mode="after")
-        def bump(self, values):
-            return {"a": values["a"] + 1}
+        def bump(self):
+            self["a"] = self["a"] + 1
 
     m = Model(a=1)
     assert m.a == 2
     assert m.doubled == 4
+
+
+def test_model_validator_pipeline_suspended_field_validators_do_not_run():
+    """Assignments inside a model_validator bypass field validators."""
+    calls = []
+
+    class Model(md):
+        x: int
+
+        @md.validator("x")
+        def record(self, value):
+            calls.append(value)
+            return value
+
+        @md.model_validator(mode="after")
+        def tweak(self):
+            calls.clear()          # reset to isolate validator-phase writes
+            self["x"] = 99         # must NOT re-trigger the field validator
+
+    m = Model(x=1)
+    assert m.x == 99
+    assert calls == []             # field validator did not fire inside the model_validator
+
+
+def test_model_validator_pipeline_suspended_no_type_coercion():
+    """Assignments inside a model_validator bypass type coercion — raw value is stored as-is."""
+    class Model(md):
+        x: int
+
+        @md.model_validator(mode="after")
+        def inject(self):
+            self["x"] = "not-an-int"   # would normally fail coercion + type check
+
+    m = Model(x=1)
+    assert m["x"] == "not-an-int"
+
+
+def test_model_validator_no_recursive_trigger():
+    """Writing self[key] inside a model_validator does not re-trigger model validators."""
+    call_count = []
+
+    class Model(md):
+        a: int
+
+        @md.model_validator(mode="after")
+        def bump(self):
+            call_count.append(1)
+            self["a"] = self["a"] + 1  # must not recurse
+
+    m = Model(a=0)
+    assert m.a == 1
+    assert len(call_count) == 1   # called exactly once, no recursion
+
+
+def test_model_validator_frozen_still_enforced():
+    """frozen=True is the only constraint that remains active inside a model_validator."""
+    class Model(md):
+        _config = md.config(frozen=True)
+        x: int
+
+        @md.model_validator(mode="after")
+        def attempt_write(self):
+            self["x"] = 99
+
+    with pytest.raises(TypeError):
+        Model(x=1)
 
 
 def test_validate_assignment_default_true():
@@ -218,7 +286,7 @@ def test_model_validator_runtime_typeerror_is_not_rewritten_as_signature_error()
         x: int
 
         @md.model_validator(mode="after")
-        def fail(self, values):
+        def fail(self):
             raise TypeError("bad invariant")
 
     with pytest.raises(TypeError, match="bad invariant"):
@@ -231,7 +299,7 @@ def test_invalid_model_validator_signature_is_rejected_at_class_definition():
             x: int
 
             @md.model_validator(mode="after")
-            def fail(self):
+            def fail():
                 return None
 
 
@@ -401,8 +469,8 @@ def test_full_pipeline_order_model():
         total: float = Computed(lambda self: sum(i.subtotal for i in self.lines))
 
         @md.model_validator(mode="after")
-        def non_empty(self, values):
-            if not values.get("lines"):
+        def non_empty(self):
+            if not self.get("lines"):
                 raise ValueError("order must have at least one item")
             return None
 

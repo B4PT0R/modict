@@ -117,9 +117,8 @@ def test_build_fields_and_model_validators_collects_computed_and_validators():
     validate_name._validator_field = "name"
     validate_name._validator_mode = "after"
 
-    def normalize(self, values):
-        values["ready"] = True
-        return values
+    def normalize(self):
+        self["ready"] = True
 
     normalize._is_model_validator = True
     normalize._model_validator_mode = "before"

@@ -637,7 +637,7 @@ def test_field_required_via_modict_field_default_missing():
     from modict import MISSING
 
     class User(modict):
-        name: str = modict.field(default=MISSING, required=True)
+        name: str = modict.field(default=MISSING, required="always")
 
     with pytest.raises(KeyError):
         User({})
@@ -694,7 +694,7 @@ def test_annotation_only_field_not_required_when_require_all_never():
 
 def test_require_all_makes_annotation_only_fields_required():
     class User(modict):
-        _config = modict.config(require_all=True)
+        _config = modict.config(require_all="always")
         name: str
         age: int = 25  # defaulted -> still present after init
 
@@ -708,7 +708,7 @@ def test_require_all_makes_annotation_only_fields_required():
 
 def test_require_all_prevents_deleting_computed_fields():
     class M(modict):
-        _config = modict.config(require_all=True, override_computed=True)
+        _config = modict.config(require_all="always", override_computed=True)
         a: int = 1
 
         @modict.computed()
@@ -723,7 +723,7 @@ def test_require_all_prevents_deleting_computed_fields():
 
 def test_require_all_prevents_clear_and_translate_stays_safe():
     class M(modict):
-        _config = modict.config(require_all=True, override_computed=True)
+        _config = modict.config(require_all="always", override_computed=True)
         a: int
 
         @modict.computed()
@@ -847,9 +847,8 @@ def test_model_validator_multi_field_invariant():
         end: int
 
         @modict.model_validator(mode="after")
-        def validate_order(self, values):
-            # values is the current dict snapshot
-            if values["start"] > values["end"]:
+        def validate_order(self):
+            if self["start"] > self["end"]:
                 raise ValueError("start must be <= end")
             return None
 

@@ -10,15 +10,15 @@ from modict import MISSING, Query, modict
 
 class LineItem(modict):
     # Required typed fields turn raw JSON dicts into validated item objects.
-    sku: str = modict.field(required=True)
-    quantity: int = modict.field(required=True)
-    unit_price_cents: int = modict.field(required=True)
+    sku: str = modict.field(required="always")
+    quantity: int = modict.field(required="always")
+    unit_price_cents: int = modict.field(required="always")
 
     @modict.model_validator(mode="after")
-    def validate_pricing(self, values):
-        if values["quantity"] <= 0:
+    def validate_pricing(self):
+        if self["quantity"] <= 0:
             raise ValueError("quantity must be > 0")
-        if values["unit_price_cents"] < 0:
+        if self["unit_price_cents"] < 0:
             raise ValueError("unit_price_cents must be >= 0")
         return None
 
@@ -27,11 +27,11 @@ class OrderWebhook(modict):
     # "forbid" makes the webhook contract explicit while keeping dict behavior.
     _config = modict.config(extra="forbid")
 
-    event_type: str = modict.field(required=True)
-    order_id: str = modict.field(required=True)
-    customer_email: str = modict.field(required=True)
+    event_type: str = modict.field(required="always")
+    order_id: str = modict.field(required="always")
+    customer_email: str = modict.field(required="always")
     shipping_cents: int = 0
-    line_items: list[LineItem] = modict.field(required=True)
+    line_items: list[LineItem] = modict.field(required="always")
     metadata: dict[str, str] = modict.factory(dict)
 
     @modict.validator("customer_email")
@@ -40,8 +40,8 @@ class OrderWebhook(modict):
         return value.strip().lower()
 
     @modict.model_validator(mode="after")
-    def validate_order(self, values):
-        if not values["line_items"]:
+    def validate_order(self):
+        if not self["line_items"]:
             raise ValueError("line_items must not be empty")
         return None
 

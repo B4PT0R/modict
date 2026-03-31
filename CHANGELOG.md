@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.9
+
+### Changed
+- `model_validator` signature simplified to `(self) -> None`. The validator receives the live instance directly and mutates it in place; the `values` snapshot argument has been removed.
+- The validation pipeline (field validators, coercion, type-checking, key constraints) is now fully suspended during `model_validator` execution. The validator has full authority over the instance; correctness is the caller's responsibility.
+
+### Fixed
+- Returning the instance snapshot from a `model_validator` no longer raises `TypeError: Cannot override computed field` when the model contains computed fields.
+
 ## 0.4.8
 
 ### Changed
