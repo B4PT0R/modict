@@ -147,6 +147,22 @@ class User(modict):
     age: int = 25
 ```
 
+If a model is meant to stay homogeneous, you can also put a default key/value
+contract on the whole mapping:
+
+```python
+from modict import modict
+
+class Fibers(modict[str, "Fiber"]):
+    pass
+```
+
+That generic form acts as a default runtime hint for undeclared items:
+- keys use the class-level key hint
+- values use the class-level value hint when no field-specific hint is declared
+- if a field declares its own hint, that field hint is checked first, then the
+  class-level default value hint is still enforced
+
 Use `modict.field(...)` when you need more explicit control over a field
 definition:
 
@@ -178,6 +194,11 @@ assert u.age == 30
 ```
 
 Note: if you pass `hint=...` explicitly in `modict.field(...)`, it takes precedence over the class annotation.
+
+When a field-specific hint and the class-level default value hint are
+incompatible, modict raises an error if a value passes the field hint but fails
+the default value hint. This prevents a "uniformly typed" modict from being
+quietly weakened by one field override.
 
 
 [↑ Back to top](#contents)
@@ -345,6 +366,7 @@ Related config flags:
 - `strict`: when `True`, no coercion is attempted — values must already match the declared type.
 - `validate_assignment`: when `True` (default), every assignment goes through the full pipeline (coercion, type check, validators). Set to `False` to only run validation at init time.
 - `enforce_json`: when `True`, values must be JSON-serializable after processing.
+- default key hints declared via `modict[K, V]` are enforced by the key pipeline instead of the value pipeline
 
 When enabled, the pipeline runs:
 - eagerly at initialization (`__init__` → `validate()`)
@@ -462,8 +484,9 @@ class User(modict):
   - `False`: bypassed entirely (pure dict behavior, no coercion or type checking).
 - `check_keys`: `True` (default) / `False`.
   - Key-level constraints are *structural* checks (presence/allowed-keys/invariants), separate from value validation.
-  - `True`: active only when the model declares key constraints (`extra != "allow"`, `require_all != "never"`, computed fields, or any field with `required != "never"`) — early exit otherwise.
+  - `True`: active only when the model declares key constraints (`extra != "allow"`, `require_all != "never"`, computed fields, any field with `required != "never"`, or a default key hint via `modict[K, V]`) — early exit otherwise.
   - `False`: bypassed entirely — `required`, `require_all`, `extra="forbid"/"ignore"`, and computed overwrite/delete protection are all skipped.
+  - Default key hints from `modict[K, V]` are checked here even when `check_values=False`.
   - `frozen=True` is always enforced regardless of `check_keys`.
 
 Example: keep structure strict but skip value coercion/type checking:

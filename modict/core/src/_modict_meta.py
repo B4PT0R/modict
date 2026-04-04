@@ -17,6 +17,28 @@ from ...model_api import (
 )
 
 
+def _extract_default_hints(
+    bases: tuple[type, ...],
+    dct: dict[str, Any],
+) -> tuple[Any, Any]:
+    default_key_hint = None
+    default_value_hint = None
+
+    for base in reversed(bases):
+        if hasattr(base, "__default_key_hint__"):
+            default_key_hint = getattr(base, "__default_key_hint__")
+        if hasattr(base, "__default_value_hint__"):
+            default_value_hint = getattr(base, "__default_value_hint__")
+
+    for original_base in dct.get("__orig_bases__", ()):
+        hints = getattr(original_base, "__modict_generic_hints__", None)
+        if hints is None:
+            continue
+        default_key_hint, default_value_hint = hints
+
+    return default_key_hint, default_value_hint
+
+
 @dataclass(init=False)
 class modictConfig(BaseConfig):
     """Configuration for modict instances.
@@ -186,13 +208,20 @@ class modictItemsView(ItemsView):
 class modictMeta(type):
 
     def __new__(mcls, name, bases, dct):
+        default_key_hint, default_value_hint = _extract_default_hints(bases, dct)
         fields, model_validators, attributes = build_fields_and_model_validators(name, bases, dct)
 
         # Store fields in __fields__
         dct['__fields__'] = fields
         dct["__model_validators__"] = tuple(model_validators)
         dct["__attributes__"] = attributes
-        dct["__has_field_hints__"] = any(field.hint is not None for field in fields.values())
+        dct["__default_key_hint__"] = default_key_hint
+        dct["__default_value_hint__"] = default_value_hint
+        dct["__has_field_hints__"] = (
+            default_key_hint is not None
+            or default_value_hint is not None
+            or any(field.hint is not None for field in fields.values())
+        )
         dct["__has_field_validators__"] = any(
             bool(getattr(field, "validators", ())) for field in fields.values()
         )

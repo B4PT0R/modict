@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.12
+
+### Added
+- `modict[K, V]` can now declare default homogeneous key/value runtime hints for the whole mapping.
+
+### Changed
+- Class-level default value hints from `modict[K, V]` now participate in the validation pipeline even for undeclared keys, while field-specific hints still run first.
+
+### Fixed
+- Default key hints from `modict[K, V]` are now enforced through `check_keys`, so key typing still applies when `check_values=False`.
+- Incompatible field-vs-default value hints now raise an explicit error when a value only satisfies the field-specific hint.
+
 ## 0.4.11
 
 ### Changed

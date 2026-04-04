@@ -51,6 +51,22 @@ import importlib
 from typing import Literal
 from collections.abc import MutableMapping, MutableSequence
 
+
+class _ModictGenericAlias:
+    def __init__(self, origin, key_hint, value_hint):
+        self.__origin__ = origin
+        self.__args__ = (key_hint, value_hint)
+        self.__modict_generic_hints__ = (key_hint, value_hint)
+
+    def __mro_entries__(self, bases):
+        return (self.__origin__,)
+
+    def __repr__(self) -> str:
+        origin_name = getattr(self.__origin__, "__name__", repr(self.__origin__))
+        key_hint, value_hint = self.__args__
+        return f"{origin_name}[{key_hint!r}, {value_hint!r}]"
+
+
 class modict(dict, metaclass=modictMeta):
     """A dict with additional capabilities.
 
@@ -83,6 +99,15 @@ class modict(dict, metaclass=modictMeta):
         $.a[0].c: 2
         $.a[0].d: 3
     """
+
+    @classmethod
+    def __class_getitem__(cls, params):
+        if not isinstance(params, tuple):
+            raise TypeError("modict[...] expects two parameters: [key_type, value_type]")
+        if len(params) != 2:
+            raise TypeError("modict[...] expects exactly two parameters: [key_type, value_type]")
+        key_hint, value_hint = params
+        return _ModictGenericAlias(cls, key_hint, value_hint)
 
     @classmethod
     def factory(cls, default_factory: Callable):
@@ -345,6 +370,9 @@ class modict(dict, metaclass=modictMeta):
                     if key not in self:
                         self._raw_setitem(key, value)
 
+        if self._check_keys_enabled():
+            self._normalize_keys()
+
         # Enforce key-level constraints (required/extra/require_all) independently of value checking.
         if self._check_keys_enabled():
             self._enforce_extra_policy()
@@ -423,6 +451,9 @@ class modict(dict, metaclass=modictMeta):
         if not config.check_keys:
             return False
 
+        if getattr(type(self), "__default_key_hint__", None) is not None:
+            return True
+
         if config.require_all != "never" or config.extra != "allow":
             return True
 
@@ -434,6 +465,63 @@ class modict(dict, metaclass=modictMeta):
         # This preserves the default "computed override protection" even for plain `modict`
         # instances where computeds are inserted dynamically at runtime.
         return bool(self._computed_field_count)
+
+    def _default_key_hint(self):
+        return getattr(type(self), "__default_key_hint__", None)
+
+    def _default_value_hint(self):
+        return getattr(type(self), "__default_value_hint__", None)
+
+    def _check_type_with_message(self, *, subject, value, hint, conflict_hint=None):
+        try:
+            check_type(hint, value)
+            return True
+        except TypeMismatchError as e:
+            if conflict_hint is not None:
+                raise TypeError(
+                    f"Key {subject!r} uses incompatible hints: field hint {conflict_hint!r} "
+                    f"accepts value {value!r}, but default hint {hint!r} rejects it"
+                ) from e
+            raise TypeError(f"Key {subject!r} expected {hint}, got {type(value)}") from e
+
+    def _coerce_key(self, key):
+        hint = self._default_key_hint()
+        if hint is None or self._config.strict:
+            return key
+        return maybe_coerce(key, hint)
+
+    def _normalize_key(self, key):
+        hint = self._default_key_hint()
+        if hint is None:
+            return key
+        normalized = self._coerce_key(key)
+        self._check_type_with_message(subject=key, value=normalized, hint=hint)
+        return normalized
+
+    def _normalize_keys(self) -> None:
+        hint = self._default_key_hint()
+        if hint is None:
+            return
+
+        replacements: list[tuple[Any, Any, Any]] = []
+        seen_targets: dict[Any, Any] = {}
+        for key, value in list(dict.items(self)):
+            normalized = self._normalize_key(key)
+            if normalized == key and type(normalized) is type(key):
+                continue
+
+            other_source = seen_targets.get(normalized, key)
+            if other_source != key:
+                raise KeyError(f"Key normalization collision: {other_source!r} and {key!r} both normalize to {normalized!r}")
+            if normalized in self and normalized != key:
+                raise KeyError(f"Key normalization collision: {key!r} normalizes to existing key {normalized!r}")
+
+            seen_targets[normalized] = key
+            replacements.append((key, normalized, value))
+
+        for old_key, new_key, value in replacements:
+            self._raw_delitem(old_key)
+            self._raw_setitem(new_key, value)
 
     def _enforce_extra_policy(self) -> None:
         """Enforce extra key policy (allow/forbid/ignore)."""
@@ -483,6 +571,7 @@ class modict(dict, metaclass=modictMeta):
             return
 
         if keys_enabled:
+            self._normalize_keys()
             self._enforce_extra_policy()
             self._check_required_fields()
 
@@ -490,6 +579,7 @@ class modict(dict, metaclass=modictMeta):
         self._run_model_validators(mode="before")
         # A "before" model validator may have replaced the underlying mapping.
         if keys_enabled:
+            self._normalize_keys()
             self._enforce_extra_policy()
             self._check_required_fields()
 
@@ -577,18 +667,32 @@ class modict(dict, metaclass=modictMeta):
         # 1. Apply validators "before" (permissive transformations)
         value = self._apply_validators(key, value, mode="before")
 
+        field = self.__fields__.get(key)
+        field_hint = hint
+        if field_hint is None and field and field.hint is not None:
+            field_hint = field.hint
+        default_hint = self._default_value_hint()
+
         # 2. Coerce to expected type (skipped in strict mode)
         if not self._config.strict:
-            value = self._coerce_value(key, value, hint)
+            value = self._coerce_value(key, value, field_hint or default_hint)
 
         # 3. Type check (always; strict controls whether coercion was attempted first)
-        if hint is None:
-            field = self.__fields__.get(key)
-            if field and field.hint is not None:
-                hint = field.hint
+        if field_hint is not None:
+            self._check_type_with_message(subject=key, value=value, hint=field_hint)
 
-        if hint is not None:
-            self._check_type(key, value, hint)
+        if default_hint is not None:
+            try:
+                same_hint = field_hint == default_hint
+            except Exception:
+                same_hint = field_hint is default_hint
+            if not same_hint:
+                self._check_type_with_message(
+                    subject=key,
+                    value=value,
+                    hint=default_hint,
+                    conflict_hint=field_hint if field_hint is not None else None,
+                )
 
         # 4. Apply validators "after" (restrictive transformations)
         value = self._apply_validators(key, value, mode="after")
@@ -656,11 +760,7 @@ class modict(dict, metaclass=modictMeta):
         )
 
     def _check_type(self, key, value, hint):
-        try:
-            check_type(hint, value)
-            return True
-        except TypeMismatchError as e:
-            raise TypeError(f"Key {key!r} expected {hint}, got {type(value)}") from e
+        return self._check_type_with_message(subject=key, value=value, hint=hint)
             
     def _invalidate_dependants(self, changed_keys: set):
         """Recursively invalidate computed properties that depend on the given keys.
@@ -770,6 +870,8 @@ class modict(dict, metaclass=modictMeta):
 
     def _store_item(self, key, value, *, validate_value: bool) -> None:
         self._check_mutable("assign", key=key)
+        normalized_key = self._normalize_key(key)
+        key = normalized_key
 
         # Inside a model_validator the full pipeline is suspended: the validator
         # has authority over the instance and is responsible for correctness.

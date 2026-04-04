@@ -1388,3 +1388,45 @@ class AppConfig(modict):
     app2 = AppConfig(settings={})
     assert isinstance(app2.settings, Settings)
     assert app2.settings.mode == 'dev'  # valeur par défaut
+
+
+def test_generic_default_key_and_value_hints_apply_to_undeclared_items():
+    class Fibers(modict[str, int]):
+        pass
+
+    fibers = Fibers({1: "2"})
+
+    assert list(fibers.keys()) == ["1"]
+    assert fibers["1"] == 2
+
+
+def test_generic_default_key_hint_is_checked_when_check_values_is_disabled():
+    class Fibers(modict[int, str]):
+        _config = modict.config(check_values=False, check_keys=True)
+
+    fibers = Fibers({"1": "raw"})
+    assert list(fibers.keys()) == [1]
+    assert fibers[1] == "raw"
+
+    with pytest.raises(TypeError, match="expected <class 'int'>"):
+        Fibers({"bad": "raw"})
+
+
+def test_generic_default_value_hint_conflict_with_field_hint_raises():
+    class Animal:
+        pass
+
+    class Dog(Animal):
+        pass
+
+    class Kennel(modict[str, Animal]):
+        lead: Dog
+
+    kennel = Kennel(lead=Dog())
+    assert isinstance(kennel.lead, Dog)
+
+    class InvalidKennel(modict[str, Animal]):
+        count: int
+
+    with pytest.raises(TypeError, match="incompatible hints"):
+        InvalidKennel(count=1)
