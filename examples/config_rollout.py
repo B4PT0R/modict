@@ -10,18 +10,18 @@ from modict import MISSING, modict
 
 class CanaryRollout(modict):
     # This nested model will be rebuilt from a stringly-typed wire payload.
-    percent: int = modict.field(required=True)
-    enabled: bool = modict.field(required=True)
+    percent: int = modict.field(required="always")
+    enabled: bool = modict.field(required="always")
 
 
 class SerializedRollout(modict):
     # A typed envelope lets modict restore the intended runtime types on load.
     _config = modict.config(extra="forbid")
 
-    debug: bool = modict.field(required=True)
-    timeout_s: int = modict.field(required=True)
-    retry_delays_s: list[int] = modict.field(required=True)
-    canary: CanaryRollout = modict.field(required=True)
+    debug: bool = modict.field(required="always")
+    timeout_s: int = modict.field(required="always")
+    retry_delays_s: list[int] = modict.field(required="always")
+    canary: CanaryRollout = modict.field(required="always")
 
 
 def main():

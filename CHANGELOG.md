@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.11
+
+### Changed
+- Documentation and examples are now aligned with the current `required="always"` semantics, the `model_validator(self)` contract, and the newer `check_values` / `check_keys` behavior descriptions.
+- Internal field collection now uses explicit required levels like `"never"` instead of legacy boolean flags.
+
+### Fixed
+- Source distribution packaging now includes the main docs plus the `examples/` and `benchmarks/` trees cleanly.
+
 ## 0.4.10
 
 ### Fixed

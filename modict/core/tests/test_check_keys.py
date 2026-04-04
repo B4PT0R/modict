@@ -6,7 +6,7 @@ from ...core import modict
 def test_check_keys_enforces_required_even_when_check_values_false():
     class Req(modict):
         _config = modict.config(check_values=False)
-        x: int = modict.field(required=True)
+        x: int = modict.field(required="always")
 
     with pytest.raises(KeyError):
         Req({})
@@ -15,7 +15,7 @@ def test_check_keys_enforces_required_even_when_check_values_false():
 def test_check_keys_can_bypass_required():
     class ReqNoKeys(modict):
         _config = modict.config(check_values=False, check_keys=False)
-        x: int = modict.field(required=True)
+        x: int = modict.field(required="always")
 
     m = ReqNoKeys({})
     assert "x" not in m
@@ -41,7 +41,7 @@ def test_check_keys_can_bypass_extra_policy():
 
 def test_check_keys_bypasses_require_all_deletion_guards():
     class StrictKeys(modict):
-        _config = modict.config(require_all=True)
+        _config = modict.config(require_all="always")
         a: int = 1
 
     s = StrictKeys({})
@@ -49,7 +49,7 @@ def test_check_keys_bypasses_require_all_deletion_guards():
         del s["a"]
 
     class LooseKeys(modict):
-        _config = modict.config(require_all=True, check_keys=False)
+        _config = modict.config(require_all="always", check_keys=False)
         a: int = 1
 
     m = LooseKeys({})

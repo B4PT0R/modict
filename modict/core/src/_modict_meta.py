@@ -28,9 +28,9 @@ class modictConfig(BaseConfig):
     Pydantic config: unsupported/unknown options raise `TypeError`.
 
     Attributes:
-       check_values: Controls whether modict enforces its validation/processing pipeline:
-           - True (default): enable when the class looks "model-like" (has hints/validators/config constraints)
-           - False: bypass validation entirely (dict-like behavior)
+       check_values: Controls whether modict runs its value validation/coercion pipeline.
+           - True (default): active only when the model has hints, validators, or config constraints — early exit otherwise.
+           - False: bypass entirely (dict-like behavior, no validation).
 
        # modict-specific fields
        auto_convert: If True, automatically convert dicts found in nested mutable containers
@@ -45,9 +45,9 @@ class modictConfig(BaseConfig):
                     - "at_init": fields must be present at construction, but can be deleted afterwards
                     - "always": fields must always be present; deletion is blocked
                     The field-level `required` and `require_all` interact by taking the stronger constraint.
-       check_keys: Controls whether modict enforces key-level structural constraints:
-           - True (default): enabled when the model declares key constraints (extra/require_all/required/computed)
-           - False: bypass key-level constraints (dict-like keys)
+       check_keys: Controls whether modict enforces key-level structural constraints.
+           - True (default): active only when the model declares key constraints (extra, require_all, required fields, computed) — early exit otherwise.
+           - False: bypass entirely (dict-like keys, no structural enforcement).
        evaluate_computed: If False, do not evaluate Computed fields on access; treat them
                          as raw stored objects (pure storage mode).
 

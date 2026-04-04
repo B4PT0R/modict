@@ -6,7 +6,7 @@ You probably write dicts everywhere:
 user = {"name": "Alice", "age": 30, "email": "alice@example.com"}
 ```
 
-And that's a great choice — dicts are fast, flexible, and universal. But as your project grows, you might want to **type** some fields, **validate** values, **derive** computed properties, or **diff** two versions. So you reach for a dataclass or a Pydantic `BaseModel`... and suddenly it no longer behaves like a dict. You have to convert, serialize, traverse, adapt.
+And that's a great choice — dicts are fast, flexible, and universal. But as your project grows, you might want to **type** some fields, **validate** values, **derive** computed properties, or **diff** two versions. So you reach for a `dataclass` or a Pydantic `BaseModel`... and suddenly it no longer behaves like a dict. You have to convert, serialize, traverse, adapt.
 
 **modict lets you stay in dict-land while gaining all of that.**
 
@@ -29,19 +29,19 @@ Both access styles work interchangeably. A modict serializes to JSON and works w
 
 ## Add types when you're ready
 
-Later, you want to make the structure explicit. Declare a class:
+Later, you want to make the structure explicit. Declare a subclass:
 
 ```python
 class User(modict):
     name: str
     age: int = 0
-    email: str = modict.field(required=True)
+    email: str = modict.field(required='always')
 
 user = User(name="Alice", age=30, email="alice@example.com")
 user.age = "thirty"  # TypeError — automatically
 ```
 
-The dict is now typed. Assignments are checked, defaults are applied, required fields are enforced.
+The dict is now typed. Assignments are checked, defaults are applied, required fields can't be deleted.
 
 > [!NOTE]
 > By default (`require_all="at_init"`), annotated fields without a default must be provided at construction — but can be freely deleted afterwards. modict stays a mutable dict. To enforce permanent presence, use `modict.field(required="always")` or `_config = modict.config(require_all="always")`. To make fields fully optional, use `require_all="never"`.
@@ -132,15 +132,15 @@ class User(modict):
     def full_name(self):
         return f"{self.first_name} {self.last_name}"
 
-    @modict.validator("age")
+    @modict.validator("age", mode='after')
     def check_age(self, value):
         if value < 0:
             raise ValueError("Age must be positive")
         return value
 
     @modict.model_validator(mode="after")
-    def check_admin_age(self, values):
-        if values.role == "admin" and values.age < 18:
+    def check_admin_age(self):
+        if self.role == "admin" and self.age < 18:
             raise ValueError("Admin users must be at least 18")
 ```
 
@@ -148,14 +148,14 @@ class User(modict):
 
 ## Compare and merge
 
-Two versions of a `User` — before and after an update. modict has tools for that:
+You want to compare two versions of a `User` — before and after an update. modict has tools for that:
 
 ```python
 before = User(first_name="Alice", last_name="Martin", age=30, email="alice@example.com", role="user")
 after  = User(first_name="Alice", last_name="Martin", age=30, email="alice@example.com", role="admin")
 
 before.diff(after)
-# {"role": ("user", "admin")}
+# yields (path,changes) pairs, here: "$.role", ("user", "admin")
 
 before.merge(after)  # in-place deep merge
 ```
@@ -179,6 +179,10 @@ You have a list of users and want to find all admins without a manual loop:
 
 ```python
 from modict import Query
+
+class App(modict):
+    name:str
+    users:list[User] = modict.factory(list)
 
 app = App(
     name="myapp",

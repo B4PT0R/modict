@@ -127,10 +127,10 @@ def build_fields_and_model_validators(
                 func_return_hint = getattr(value, "__annotations__", {}).get("return")
                 final_hint = hint if hint is not None else func_return_hint
                 attributes.pop(key, None)
-                fields[key] = Field(default=computed_obj, hint=final_hint, required=False)
+                fields[key] = Field(default=computed_obj, hint=final_hint, required="never")
             elif not isinstance(value, Field):
                 attributes.pop(key, None)
-                fields[key] = Field(default=value, hint=hint, required=False)
+                fields[key] = Field(default=value, hint=hint, required="never")
             else:
                 if value.hint is None:
                     value.hint = hint
@@ -139,7 +139,7 @@ def build_fields_and_model_validators(
             dct.pop(key)
         else:
             attributes.pop(key, None)
-            fields[key] = Field(default=MISSING, hint=hint, required=False)
+            fields[key] = Field(default=MISSING, hint=hint, required="never")
 
     for key, value in list(dct.items()):
         if key in annotations:
@@ -158,7 +158,7 @@ def build_fields_and_model_validators(
             computed_obj = Computed(value, cache=cache, deps=deps)
             func_return_hint = getattr(value, "__annotations__", {}).get("return")
             attributes.pop(key, None)
-            fields[key] = Field(default=computed_obj, hint=func_return_hint, required=False)
+            fields[key] = Field(default=computed_obj, hint=func_return_hint, required="never")
         elif not isinstance(value, Field):
             attributes.pop(key, None)
             fields[key] = Field(default=value)

@@ -28,8 +28,8 @@ class Address(modict):
     # from_attributes=True allows building typed models from SDK / ORM style objects.
     _config = modict.config(from_attributes=True)
 
-    city: str = modict.field(required=True)
-    country: str = modict.field(required=True)
+    city: str = modict.field(required="always")
+    country: str = modict.field(required="always")
 
 
 class CustomerSnapshot(modict):
@@ -38,11 +38,11 @@ class CustomerSnapshot(modict):
     # modict.attr(...) declares class metadata without turning it into a field.
     source_system = modict.attr("crm")
 
-    customer_id: str = modict.field(required=True)
-    email: str = modict.field(required=True)
+    customer_id: str = modict.field(required="always")
+    email: str = modict.field(required="always")
     is_vip: bool = False
     tags: list[str] = modict.factory(list)
-    address: Address = modict.field(required=True)
+    address: Address = modict.field(required="always")
 
     @modict.validator("email")
     def normalize_email(self, value):
