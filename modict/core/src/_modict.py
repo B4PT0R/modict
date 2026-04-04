@@ -390,6 +390,33 @@ class modict(dict, metaclass=modictMeta):
         dict.clear(self)
         object.__setattr__(self, "_computed_field_count", 0)
 
+    def _clone_for_assignment_validation(self):
+        """Clone the raw instance state for transactional assignment validation."""
+        new = type(self)._new_empty_like(config=self._config)
+        for attr_key, attr_value in self.__dict__.items():
+            if attr_key in {"_config", "_computed_field_count", "_in_model_validator"}:
+                continue
+            object.__setattr__(new, attr_key, attr_value)
+        for key, value in dict.items(self):
+            cloned = copy.copy(value) if isinstance(value, Computed) else value
+            new._raw_setitem(key, cloned)
+        return new
+
+    def _replace_instance_state(self, other) -> None:
+        """Replace raw mapping state from another validated instance clone."""
+        for attr_key in list(self.__dict__.keys()):
+            if attr_key in {"_config", "_computed_field_count", "_in_model_validator"}:
+                continue
+            object.__delattr__(self, attr_key)
+        for attr_key, attr_value in other.__dict__.items():
+            if attr_key in {"_config", "_computed_field_count", "_in_model_validator"}:
+                continue
+            object.__setattr__(self, attr_key, attr_value)
+
+        self._raw_clear()
+        for key, value in dict.items(other):
+            self._raw_setitem(key, value)
+
     def _check_keys_enabled(self) -> bool:
         """Return True if modict should enforce key-level structural constraints."""
         config = self._config
@@ -788,6 +815,13 @@ class modict(dict, metaclass=modictMeta):
                     pass
 
         if validate_value:
+            model_validators = getattr(type(self), "__model_validators__", ())
+            if model_validators:
+                working = self._clone_for_assignment_validation()
+                working._store_item(key, value, validate_value=False)
+                working.validate()
+                self._replace_instance_state(working)
+                return
             value = self._check_value(key, value)
         self._raw_setitem(key, value)
         self._invalidate_dependants({key})

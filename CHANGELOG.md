@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.10
+
+### Fixed
+- Assignment validation now replays model validators too, and failed assignments leave the instance unchanged.
+
 ## 0.4.9
 
 ### Changed

@@ -124,6 +124,41 @@ def test_model_validator_and_computed_together():
         Rectangle(width=-1.0, height=4.0)
 
 
+def test_model_validator_replays_on_assignment_and_rolls_back_on_failure():
+    class Range(md):
+        start: int
+        end: int
+
+        @md.model_validator(mode="after")
+        def validate_order(self):
+            if self["start"] > self["end"]:
+                raise ValueError("start must be <= end")
+
+    r = Range(start=1, end=2)
+
+    with pytest.raises(ValueError, match="start must be <= end"):
+        r.start = 3
+
+    assert r.start == 1
+    assert r.end == 2
+
+
+def test_before_model_validator_replays_on_item_assignment():
+    class Mirror(md):
+        x: int
+        y: int
+
+        @md.model_validator(mode="before")
+        def mirror_x_into_y(self):
+            self["y"] = self["x"]
+
+    m = Mirror(x=1, y=0)
+    m["x"] = "5"
+
+    assert m.x == 5
+    assert m.y == 5
+
+
 def test_after_model_validator_bypasses_extra_policy():
     """Inside a model_validator the pipeline is suspended: the validator has full
     authority and assignments bypass extra/computed/type constraints."""
