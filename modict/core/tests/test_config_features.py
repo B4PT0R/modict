@@ -101,3 +101,74 @@ def test_frozen_inheritance():
     child = UnfrozenChild(name="test", age=25)
     child.name = "new"
     assert child.name == "new"
+
+
+def test_ignore_none_skips_init_and_assignment():
+    class Config(modict):
+        _config = modict.config(ignore_none=True)
+        host: str = "localhost"
+        port: int = 5432
+
+    config = Config(host=None, port=1234)
+    assert config.host == "localhost"
+    assert config.port == 1234
+
+    config["port"] = None
+    assert config.port == 1234
+
+    config.host = None
+    assert config.host == "localhost"
+
+
+def test_ignore_none_skips_update_and_merge_operator():
+    class Config(modict):
+        _config = modict.config(ignore_none=True)
+        host: str = "localhost"
+        port: int = 5432
+
+    config = Config(host="db.internal", port=1234)
+    config.update({"host": None, "port": 9999})
+    assert config.host == "db.internal"
+    assert config.port == 9999
+
+    merged = config | {"host": None, "port": 7777}
+    assert merged.host == "db.internal"
+    assert merged.port == 7777
+
+
+def test_ignore_none_setdefault_none_is_noop():
+    class Config(modict):
+        _config = modict.config(ignore_none=True)
+
+    config = Config()
+    assert config.setdefault("missing", None) is None
+    assert "missing" not in config
+
+
+def test_ignore_none_skips_default_none_for_effectively_optional_field():
+    class Config(modict):
+        _config = modict.config(ignore_none=True, require_all="never")
+        host: str | None = None
+
+    config = Config()
+    assert "host" not in config
+
+
+def test_ignore_none_keeps_default_none_for_effectively_required_field():
+    class Config(modict):
+        _config = modict.config(ignore_none=True, require_all="at_init")
+        host: str | None = None
+
+    config = Config()
+    assert "host" in config
+    assert config.host is None
+
+
+def test_ignore_none_keeps_default_none_when_field_required_overrides_require_all():
+    class Config(modict):
+        _config = modict.config(ignore_none=True, require_all="never")
+        host: str | None = modict.field(default=None, required="always")
+
+    config = Config()
+    assert "host" in config
+    assert config.host is None

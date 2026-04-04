@@ -125,6 +125,10 @@ class User(modict):
     age: int = 25
 ```
 
+Set `_config = modict.config(ignore_none=True)` when you want non-destructive
+overlay/merge behavior: incoming `None` values are ignored instead of
+overwriting existing values.
+
 > [!NOTE]
 > Annotated fields without a default are required at construction time by default (`require_all="at_init"`), but can be freely deleted or popped afterwards — modict stays a mutable dict. Use `modict.field(required="always")` or `_config = modict.config(require_all="always")` to enforce presence as a permanent invariant. Use `require_all="never"` to make all fields fully optional.
 
@@ -473,6 +477,7 @@ class User(modict):
         extra="allow",
         strict=False,
         validate_assignment=True,  # default
+        ignore_none=False,        # default
         auto_convert=True,
     )
 ```
@@ -505,6 +510,7 @@ class Msg(modict):
   - `"ignore"` drops unknown keys silently.
 - `strict`: when `True`, disables coercion (type checking still applies when hints exist).
 - `validate_assignment`: when `True` (default), every assignment re-runs the full pipeline. Set to `False` to only validate at init.
+- `ignore_none`: when `True`, incoming `None` assignments are treated as no-ops instead of overwriting values. This applies to construction input, item assignment, attribute assignment, `update()`, `|` / `|=`, and `setdefault(key, None)`.
 - `frozen`: when `True`, `__setitem__` / `__delitem__` raise — effectively read-only instances.
 - `auto_convert`: when `True` (default), values stored in nested mutable containers are lazily upgraded on access:
   - nested plain `dict` → `modict` (plain `modict`, not your subclass)
@@ -522,6 +528,9 @@ Required vs defaults (dict-first semantics):
 - A class default (e.g. `age: int = 25`) is an *initializer*: injected once at construction if missing, always removable afterwards.
 - `"at_init"` (default): field must be provided at construction, but can be deleted freely after — dict mutability is preserved.
 - `"always"`: field is a permanent invariant — deletion is blocked. Opt in explicitly via `modict.field(required="always")` or `require_all="always"`.
+- When `ignore_none=True`, declared defaults equal to `None` still follow the effective required level:
+  - effective required `"never"`: the key is not materialized at init
+  - effective required `"at_init"` or `"always"`: the key is materialized with value `None`
 
 ### Performance / dict-like mode
 

@@ -144,6 +144,7 @@ class modict(dict, metaclass=modictMeta):
         Args:
             check_values: Enable/disable modict's validation pipeline (True/False)
             auto_convert: Automatically convert nested dicts to modicts
+            ignore_none: Skip key assignments whose value is None
             extra: Control extra attributes ('allow', 'forbid', 'ignore')
             strict: Pydantic-like strict mode (no coercion)
             enforce_json: Ensure all values are JSON-serializable
@@ -349,6 +350,8 @@ class modict(dict, metaclass=modictMeta):
                     data[field_name] = getattr(src, field_name)
             args = (data,)
 
+        args, kwargs = self._filter_none_assignments(args, kwargs)
+
         super().__init__(*args,**kwargs)
         object.__setattr__(
             self,
@@ -367,7 +370,7 @@ class modict(dict, metaclass=modictMeta):
                     # the target model contract.
                     self._raw_setitem(key, value)
                 else:
-                    if key not in self:
+                    if key not in self and self._should_materialize_default(key, value):
                         self._raw_setitem(key, value)
 
         if self._check_keys_enabled():
@@ -417,6 +420,39 @@ class modict(dict, metaclass=modictMeta):
     def _raw_clear(self) -> None:
         dict.clear(self)
         object.__setattr__(self, "_computed_field_count", 0)
+
+    def _should_ignore_none_assignment(self, value) -> bool:
+        return value is None and bool(getattr(self._config, "ignore_none", False))
+
+    def _filter_none_assignments(self, args, kwargs):
+        if not bool(getattr(self._config, "ignore_none", False)):
+            return args, kwargs
+
+        filtered_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        if not args:
+            return args, filtered_kwargs
+
+        source = args[0]
+        if hasattr(source, "items"):
+            filtered_source = [(key, value) for key, value in source.items() if value is not None]
+        else:
+            filtered_source = [(key, value) for key, value in source if value is not None]
+        return (filtered_source, *args[1:]), filtered_kwargs
+
+    def _should_materialize_default(self, key, value) -> bool:
+        if value is not None:
+            return True
+        if not bool(getattr(self._config, "ignore_none", False)):
+            return True
+
+        fields = getattr(self, "__fields__", {}) or {}
+        field = fields.get(key)
+        if field is None:
+            return True
+
+        require_all = getattr(self._config, "require_all", "never")
+        effective = _effective_required(getattr(field, "required", "never"), require_all)
+        return effective != "never"
 
     def _clone_for_assignment_validation(self):
         """Clone the raw instance state for transactional assignment validation."""
@@ -869,6 +905,8 @@ class modict(dict, metaclass=modictMeta):
         return True
 
     def _store_item(self, key, value, *, validate_value: bool) -> None:
+        if self._should_ignore_none_assignment(value):
+            return
         self._check_mutable("assign", key=key)
         normalized_key = self._normalize_key(key)
         key = normalized_key
@@ -1194,6 +1232,8 @@ class modict(dict, metaclass=modictMeta):
         if key in self:
             return self[key]
         else:
+            if self._should_ignore_none_assignment(default):
+                return default
             self[key] = default
             return self[key]
 

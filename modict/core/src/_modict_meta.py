@@ -72,6 +72,15 @@ class modictConfig(BaseConfig):
            - False: bypass entirely (dict-like keys, no structural enforcement).
        evaluate_computed: If False, do not evaluate Computed fields on access; treat them
                          as raw stored objects (pure storage mode).
+       ignore_none: If True, incoming assignments of ``None`` are skipped instead of
+                    overwriting existing values.
+                    - Applies to construction input, ``__setitem__``, attribute assignment,
+                      ``update()``, ``|`` / ``|=``, and ``setdefault(key, None)``.
+                    - Declared defaults equal to ``None`` still follow the field's
+                      effective required level.
+                    - Effective required ``"never"``: the key is omitted.
+                    - Effective required ``"at_init"`` or ``"always"``: the key is
+                      materialized with value ``None``.
 
        # Pydantic-aligned fields (actively used)
        extra: Controls handling of extra attributes ('allow', 'forbid', 'ignore').
@@ -95,6 +104,7 @@ class modictConfig(BaseConfig):
     check_keys: bool = True
     check_values: bool = True
     evaluate_computed: bool = True
+    ignore_none: bool = False
 
     # Pydantic-aligned (actively used)
     extra: Literal['allow', 'forbid', 'ignore'] = 'allow'

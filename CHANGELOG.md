@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.13
+
+### Added
+- `ignore_none` config option to skip incoming `None` assignments for non-destructive overlay/merge workflows.
+
+### Changed
+- Defaults declared as `None` now follow the field's effective required level when `ignore_none=True`: effectively optional fields stay absent, effectively required fields are materialized with `None`.
+- Documentation now covers `ignore_none` behavior in `modictConfig` and the main README.
+
 ## 0.4.12
 
 ### Added
