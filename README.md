@@ -250,6 +250,24 @@ u = User(email="  ALICE@EXAMPLE.COM ")
 assert u.email == "alice@example.com"
 ```
 
+### Any-key validators
+
+Use `@modict.any_validator(mode="before"|"after")` to run a key-aware validator on every validated assignment.
+
+- Expected signature: `(self, key, value) -> value`
+- Useful for reactive dispatch, generic normalization, or shared policies across declared and undeclared keys
+
+```python
+from modict import modict
+
+class Payload(modict):
+    @modict.any_validator
+    def normalize_strings(self, key, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
+```
+
 ### Model validators (cross-field invariants)
 
 Use `@modict.model_validator(mode="before"|"after")` for checks that span multiple fields.
@@ -993,6 +1011,7 @@ The root package keeps only the most common convenience symbols:
   - `modict.attr(value) -> Attribute`
 - `modict.wrap(*wrap_args, **wrap_kwargs) -> callable`
 - `@modict.validator(field_name, mode="before"|"after")`
+- `@modict.any_validator(mode="before"|"after")`
 - `@modict.model_validator(mode="before"|"after")`
 - `@modict.computed(cache=False, deps=None)`
 - JSON helpers:

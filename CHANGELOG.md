@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.14
+
+### Added
+- `@modict.any_validator(mode="before"|"after")` for key-aware validation/transformation on every validated assignment, with signature `(self, key, value) -> value`.
+
+### Changed
+- README now documents `@modict.any_validator(...)` alongside the other model-layer decorators.
+
+### Tests
+- Added regression coverage for any-key validator collection, runtime execution, and signature validation.
+
 ## 0.4.13
 
 ### Added

@@ -338,6 +338,28 @@ def test_invalid_model_validator_signature_is_rejected_at_class_definition():
                 return None
 
 
+def test_any_validator_runtime_typeerror_is_not_rewritten_as_signature_error():
+    class Model(md):
+        x: int
+
+        @md.any_validator
+        def fail(self, key, value):
+            raise TypeError(f"bad key {key}")
+
+    with pytest.raises(TypeError, match="bad key x"):
+        Model(x=1)
+
+
+def test_invalid_any_validator_signature_is_rejected_at_class_definition():
+    with pytest.raises(TypeError, match="Invalid any-validator signature"):
+        class Model(md):
+            x: int
+
+            @md.any_validator
+            def fail(self, value):
+                return value
+
+
 # ---------------------------------------------------------------------------
 # Config inheritance × Field overrides
 # ---------------------------------------------------------------------------

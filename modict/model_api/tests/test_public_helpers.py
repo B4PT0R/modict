@@ -6,6 +6,7 @@ import pytest
 
 from modict.model_api import (
     Field,
+    build_any_validators,
     build_fields_and_model_validators,
     check_json_serializable,
     get_annotations,
@@ -145,3 +146,22 @@ def test_build_fields_and_model_validators_collects_computed_and_validators():
     assert "total" not in dct
     assert "validate_name" not in dct
     assert "normalize" not in dct
+
+
+def test_build_any_validators_collects_and_removes_decorated_methods():
+    def normalize_any(self, key, value):
+        return (key, value)
+
+    normalize_any._is_any_validator = True
+    normalize_any._any_validator_mode = "after"
+
+    dct = {
+        "__module__": __name__,
+        "normalize_any": normalize_any,
+    }
+
+    any_validators = build_any_validators((), dct)
+
+    assert len(any_validators) == 1
+    assert any_validators[0].mode == "after"
+    assert "normalize_any" not in dct

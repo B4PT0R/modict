@@ -2,9 +2,10 @@
 
 from .src._computed import invalidate_dependants
 from .src._config import Config
-from .src._core import Attribute, Computed, Factory, ModelValidator, Validator
+from .src._core import AnyValidator, Attribute, Computed, Factory, ModelValidator, Validator
 from .src._field import Field
 from .src._metaclass_fields import (
+    build_any_validators,
     build_fields_and_model_validators,
     get_annotations,
     is_field,
@@ -21,6 +22,7 @@ __all__ = [
     "Attribute",
     "Config",
     "Field",
+    "AnyValidator",
     "Validator",
     "ModelValidator",
     "Computed",
@@ -31,5 +33,6 @@ __all__ = [
     "is_locally_defined_class",
     "is_locally_defined_descriptor",
     "is_field",
+    "build_any_validators",
     "build_fields_and_model_validators",
 ]

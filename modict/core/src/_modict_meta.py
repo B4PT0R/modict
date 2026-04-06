@@ -13,6 +13,7 @@ from ...model_api import (
     Field,
     ModelValidator,
     Validator,
+    build_any_validators,
     build_fields_and_model_validators,
 )
 
@@ -220,10 +221,12 @@ class modictMeta(type):
     def __new__(mcls, name, bases, dct):
         default_key_hint, default_value_hint = _extract_default_hints(bases, dct)
         fields, model_validators, attributes = build_fields_and_model_validators(name, bases, dct)
+        any_validators = build_any_validators(bases, dct)
 
         # Store fields in __fields__
         dct['__fields__'] = fields
         dct["__model_validators__"] = tuple(model_validators)
+        dct["__any_validators__"] = tuple(any_validators)
         dct["__attributes__"] = attributes
         dct["__default_key_hint__"] = default_key_hint
         dct["__default_value_hint__"] = default_value_hint
@@ -234,7 +237,7 @@ class modictMeta(type):
         )
         dct["__has_field_validators__"] = any(
             bool(getattr(field, "validators", ())) for field in fields.values()
-        )
+        ) or bool(any_validators)
         dct["__has_required_fields__"] = any(
             getattr(field, "required", "never") != "never" for field in fields.values()
         )

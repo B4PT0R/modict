@@ -935,6 +935,40 @@ def test_check_decorator_runs_and_transforms():
     assert profile.email == "new@mail.com"
 
 
+def test_any_validator_runs_for_declared_and_extra_keys():
+    class Payload(modict):
+        _config = modict.config(validate_assignment=True)
+        name: str
+
+        @modict.any_validator
+        def normalize_strings(self, key, value):
+            if isinstance(value, str):
+                return f"{key}:{value.strip().lower()}"
+            return value
+
+    payload = Payload(name="  Alice  ", city="  Paris  ")
+
+    assert payload.name == "name:alice"
+    assert payload.city == "city:paris"
+
+    payload["role"] = "  Admin "
+    assert payload.role == "role:admin"
+
+
+def test_any_validator_mode_after_runs_after_coercion():
+    class Event(modict):
+        count: int
+
+        @modict.any_validator(mode="after")
+        def observe_typed_values(self, key, value):
+            assert key == "count"
+            assert isinstance(value, int)
+            return value + 1
+
+    event = Event(count="2")
+    assert event.count == 3
+
+
 def test_strict_and_extra_enforced():
     class StrictModel(modict):
         _config = modict.config(strict=True, extra='forbid', validate_assignment=True)

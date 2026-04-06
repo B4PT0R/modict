@@ -238,6 +238,26 @@ class modict(dict, metaclass=modictMeta):
         return decorator
 
     @classmethod
+    def any_validator(cls, func=None, *, mode: Literal["before", "after"] = "before"):
+        """Decorator to create key-aware validators for any modified item.
+
+        Expected signature: ``(self, key, value) -> value``.
+
+        These validators run for every validated key, without having to declare
+        an explicit field dependency.
+        """
+        if func is None:
+            def decorator(f):
+                f._is_any_validator = True
+                f._any_validator_mode = mode
+                return f
+            return decorator
+        else:
+            func._is_any_validator = True
+            func._any_validator_mode = mode
+            return func
+
+    @classmethod
     def model_validator(cls, func=None, *, mode: Literal["before", "after"] = "after"):
         """Decorator to create model-level validators (multi-field invariants).
 
@@ -749,6 +769,11 @@ class modict(dict, metaclass=modictMeta):
         Returns:
             The transformed value after all validators
         """
+        any_validators = getattr(type(self), "__any_validators__", ())
+        for validator in any_validators:
+            if getattr(validator, "mode", "before") == mode:
+                value = validator(self, key, value)
+
         field = self.__fields__.get(key)
         validators = getattr(field, "validators", None)
         if field and validators:

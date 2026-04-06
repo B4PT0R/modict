@@ -5,7 +5,7 @@ from typing import Any, Dict, Tuple
 
 from ...collections_utils import MISSING
 
-from ._core import Attribute, Computed, ModelValidator, Validator
+from ._core import AnyValidator, Attribute, Computed, ModelValidator, Validator
 from ._field import Field
 
 
@@ -69,6 +69,9 @@ def is_field(key: str, value: Any, name: str, bases: Tuple[type, ...], dct: Dict
         return True
 
     if hasattr(value, "_is_validator"):
+        return False
+
+    if hasattr(value, "_is_any_validator"):
         return False
 
     if hasattr(value, "_is_model_validator"):
@@ -189,3 +192,28 @@ def build_fields_and_model_validators(
             dct.pop(key)
 
     return fields, model_validators, attributes
+
+
+def build_any_validators(
+    bases: Tuple[type, ...],
+    dct: Dict[str, Any],
+) -> list[AnyValidator]:
+    any_validators: list[AnyValidator] = []
+
+    for base in reversed(bases):
+        if hasattr(base, "__any_validators__"):
+            any_validators.extend(list(base.__any_validators__))  # type: ignore[attr-defined]
+
+    existing_any_validators = dct.get("__any_validators__")
+    if existing_any_validators:
+        any_validators.extend(list(existing_any_validators))
+
+    for key, value in list(dct.items()):
+        if isinstance(value, FunctionType) and hasattr(value, "_is_any_validator"):
+            mode = getattr(value, "_any_validator_mode", "before")
+            if mode not in ("before", "after"):
+                mode = "before"
+            any_validators.append(AnyValidator(value, mode=mode))
+            dct.pop(key)
+
+    return any_validators
