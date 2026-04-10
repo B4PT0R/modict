@@ -77,6 +77,7 @@ class TestAttributeAccess:
         m.set_attr("trace_id", "req_123")
 
         assert m.trace_id == "req_123"
+        assert m.get_attr("trace_id") == "req_123"
         assert m.has_attr("trace_id") is True
         assert "trace_id" not in m
 
@@ -97,6 +98,18 @@ class TestAttributeAccess:
         m = modict(a=1)
         with pytest.raises(AttributeError):
             _ = m.nonexistent
+
+    def test_get_attr_missing_raises_attribute_error(self):
+        m = modict(a=1)
+
+        with pytest.raises(AttributeError):
+            m.get_attr("nonexistent")
+
+    def test_get_attr_returns_default_for_missing_metadata(self):
+        m = modict(trace_id="payload")
+
+        assert m.get_attr("nonexistent", "fallback") == "fallback"
+        assert m.get_attr("trace_id", "fallback") == "fallback"
 
     def test_delattr_removes_plain_instance_attribute(self):
         m = modict()
@@ -123,6 +136,7 @@ class TestAttributeAccess:
 
         m = Tagged()
 
+        assert m.get_attr("source") == "crm"
         assert m.has_attr("source") is True
         assert m.source == "crm"
 
@@ -144,10 +158,12 @@ class TestAttributeAccess:
         m = Tagged()
         m.set_attr("source", "erp")
 
+        assert m.get_attr("source") == "erp"
         assert m.source == "erp"
 
         m.del_attr("source")
 
+        assert m.get_attr("source") == "crm"
         assert m.source == "crm"
         assert m.has_attr("source") is True
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.15
+
+### Added
+- `get_attr(name, default=MISSING) -> Any` to complete the runtime attrs helper API alongside `set_attr()` / `has_attr()` / `del_attr()`.
+
+### Changed
+- Documentation now shows `get_attr()` in the public API and quickstart runtime metadata examples.
+
+### Tests
+- Added regression coverage for `get_attr()` on instance attrs, inherited class attrs, missing attrs, and payload-key collisions.
+
 ## 0.4.14
 
 ### Added

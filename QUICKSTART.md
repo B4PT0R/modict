@@ -236,6 +236,7 @@ user = User(first_name="Alice", last_name="Martin", age=30, email="alice@example
 user.set_attr("_session_id", "abc123")
 
 json.dumps(user)              # {"first_name": "Alice", ...} — no _session_id
+user.get_attr("_session_id")  # "abc123"
 user.has_attr("_session_id")  # True — available at runtime, invisible outside
 ```
 

@@ -1304,6 +1304,21 @@ class modict(dict, metaclass=modictMeta):
         else:
             return super().__getattribute__(key)
 
+    def get_attr(self, key: str, default: Any = MISSING) -> Any:
+        """Return plain metadata stored outside of the mapping payload.
+
+        This only reads runtime/class metadata managed via ``set_attr()`` or
+        ``modict.attr(...)``. Mapping keys are intentionally ignored.
+        """
+        if key in self.__dict__:
+            return self.__dict__[key]
+        class_attributes = getattr(type(self), "__attributes__", {})
+        if key in class_attributes:
+            return class_attributes[key]
+        if default is not MISSING:
+            return default
+        raise AttributeError(f"'{type(self).__name__}' object has no metadata attribute '{key}'")
+
     def has_attr(self, key: str) -> bool:
         """Return True if a plain attribute metadata entry exists.
 

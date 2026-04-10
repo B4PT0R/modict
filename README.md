@@ -765,9 +765,9 @@ That means the same object can be:
 - passed anywhere a `dict` or `Mapping` is expected
 - still used as a domain object with methods like `render()`, `mount()`, `resolve_theme()`, `dispatch()`, ...
 
-### When to use `attr(...)`
+### When to use `xxx_attr(...)`
 
-Use `modict.attr(...)` when a value should stay an attribute instead of becoming
+Use `modict.xxx_attr(...)` methods when a value should stay an attribute instead of becoming
 a field or a payload key.
 
 Typical cases:
@@ -1029,6 +1029,7 @@ Instance methods keep standard dict behavior, plus:
 - Validation:
   - `validate()`
 - Runtime attrs:
+  - `get_attr(name, default=MISSING) -> Any`
   - `set_attr(name, value) -> None`
   - `has_attr(name) -> bool`
   - `del_attr(name) -> None`
