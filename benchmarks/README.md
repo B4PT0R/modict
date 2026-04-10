@@ -21,6 +21,7 @@ Notes:
 - these are not part of the test suite
 - numbers are machine-dependent; compare relative deltas more than absolute timings
 - prefer adding a focused script here when optimizing a hotspot, instead of burying timing code inside tests
+- `run_all.py` compares the current run against `benchmarks/baseline.toml` and updates the baseline by keeping the smallest `us/op` seen so far for each benchmark label
 
 Current scripts:
 - `run_all.py`: sequential runner for the benchmark scripts in this directory

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.17
+
+### Changed
+- Validation sequencing was tightened and clarified: `any_validator` is now a pure value hook, `model_validator` keeps final authority over values, and structural key checks are enforced on the final post-validator state.
+- Assignment validation now aligns more closely with init-time sequencing when `model_validator` is involved, including deferred default-key-hint normalization.
+- Default value hint checking now runs before field-specific hint checking; a field-level incompatibility is only reported after the class-level default value contract passes.
+- Benchmark tooling now persists a machine-readable baseline in `benchmarks/baseline.toml`, compares current runs against it, and keeps the best observed `us/op` per benchmark.
+
+### Tests
+- Added regression coverage for chained key normalization with `model_validator(mode="after")`, `any_validator` mutation blocking, and the refined default-hint-vs-field-hint error cases.
+
 ## 0.4.16
 
 ### Fixed

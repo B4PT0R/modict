@@ -969,6 +969,33 @@ def test_any_validator_mode_after_runs_after_coercion():
     assert event.count == 3
 
 
+def test_any_validator_cannot_mutate_instance_during_validation():
+    class Payload(modict):
+        name: str
+
+        @modict.any_validator
+        def mutate(self, key, value):
+            self["seen"] = True
+            return value
+
+    with pytest.raises(TypeError, match="inside any_validator"):
+        Payload(name="alice")
+
+
+def test_any_validator_cannot_delete_during_validation():
+    class Payload(modict):
+        name: str
+
+        @modict.any_validator
+        def mutate(self, key, value):
+            if "name" in self:
+                del self["name"]
+            return value
+
+    with pytest.raises(TypeError, match="inside any_validator"):
+        Payload(name="alice")
+
+
 def test_strict_and_extra_enforced():
     class StrictModel(modict):
         _config = modict.config(strict=True, extra='forbid', validate_assignment=True)
@@ -1446,7 +1473,33 @@ def test_generic_default_key_hint_is_checked_when_check_values_is_disabled():
         Fibers({"bad": "raw"})
 
 
-def test_generic_default_value_hint_conflict_with_field_hint_raises():
+def test_generic_default_key_hint_is_checked_after_model_validator_after():
+    class Fibers(modict[int, str]):
+        @modict.model_validator(mode="after")
+        def rewrite_key(self):
+            if "1" in self:
+                self[1] = self.pop("1")
+
+    fibers = Fibers({"1": "raw"})
+    assert list(fibers.keys()) == [1]
+    assert fibers[1] == "raw"
+
+
+def test_assignment_with_model_validator_sees_raw_key_before_final_key_normalization():
+    class Fibers(modict[int, str]):
+        @modict.model_validator(mode="after")
+        def rewrite_key(self):
+            if "2" in self:
+                self[3] = self.pop("2")
+
+    fibers = Fibers()
+    fibers["2"] = "raw"
+
+    assert list(fibers.keys()) == [3]
+    assert fibers[3] == "raw"
+
+
+def test_generic_default_value_hint_and_field_hint_errors_are_distinguished():
     class Animal:
         pass
 
@@ -1459,8 +1512,11 @@ def test_generic_default_value_hint_conflict_with_field_hint_raises():
     kennel = Kennel(lead=Dog())
     assert isinstance(kennel.lead, Dog)
 
+    with pytest.raises(TypeError, match="incompatible hints"):
+        Kennel(lead=Animal())
+
     class InvalidKennel(modict[str, Animal]):
         count: int
 
-    with pytest.raises(TypeError, match="incompatible hints"):
+    with pytest.raises(TypeError, match="expected <class .*Animal"):
         InvalidKennel(count=1)

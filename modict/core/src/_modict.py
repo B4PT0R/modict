@@ -397,16 +397,12 @@ class modict(dict, metaclass=modictMeta):
                     if key not in self and self._should_materialize_default(key, value):
                         self._raw_setitem(key, value)
 
-        if self._check_keys_enabled():
-            self._normalize_keys()
-
-        # Enforce key-level constraints (required/extra/require_all) independently of value checking.
-        if self._check_keys_enabled():
-            self._enforce_extra_policy()
-            self._check_required_fields()
-
         if self._check_values_enabled():
             self.validate()
+        elif self._check_keys_enabled():
+            self._normalize_keys()
+            self._enforce_extra_policy()
+            self._check_required_fields()
 
     def _extract_attribute_wrappers(self) -> None:
         for key, value in list(dict.items(self)):
@@ -550,13 +546,16 @@ class modict(dict, metaclass=modictMeta):
             return key
         return maybe_coerce(key, hint)
 
-    def _normalize_key(self, key):
+    def _check_key(self, key):
         hint = self._default_key_hint()
         if hint is None:
             return key
         normalized = self._coerce_key(key)
         self._check_type_with_message(subject=key, value=normalized, hint=hint)
         return normalized
+
+    def _normalize_key(self, key):
+        return self._check_key(key)
 
     def _normalize_keys(self) -> None:
         hint = self._default_key_hint()
@@ -630,20 +629,14 @@ class modict(dict, metaclass=modictMeta):
         if (not values_enabled) and (not keys_enabled):
             return
 
-        if keys_enabled:
-            self._normalize_keys()
-            self._enforce_extra_policy()
-            self._check_required_fields()
-
         # Model-level validators (pre)
         self._run_model_validators(mode="before")
-        # A "before" model validator may have replaced the underlying mapping.
-        if keys_enabled:
-            self._normalize_keys()
-            self._enforce_extra_policy()
-            self._check_required_fields()
 
         if not values_enabled:
+            if keys_enabled:
+                self._normalize_keys()
+                self._enforce_extra_policy()
+                self._check_required_fields()
             return
 
         keys_to_remove = []
@@ -674,6 +667,11 @@ class modict(dict, metaclass=modictMeta):
 
         # Model-level validators (post)
         self._run_model_validators(mode="after")
+
+        if keys_enabled:
+            self._normalize_keys()
+            self._enforce_extra_policy()
+            self._check_required_fields()
 
     def _check_values_enabled(self) -> bool:
         """Return True if modict should run its value/key checking pipeline."""
@@ -727,32 +725,14 @@ class modict(dict, metaclass=modictMeta):
         # 1. Apply validators "before" (permissive transformations)
         value = self._apply_validators(key, value, mode="before")
 
-        field = self.__fields__.get(key)
-        field_hint = hint
-        if field_hint is None and field and field.hint is not None:
-            field_hint = field.hint
-        default_hint = self._default_value_hint()
+        field_hint, default_hint, effective_hint = self._resolve_value_hints(key, hint=hint)
 
         # 2. Coerce to expected type (skipped in strict mode)
-        if not self._config.strict:
-            value = self._coerce_value(key, value, field_hint or default_hint)
+        if effective_hint is not None and not self._config.strict:
+            value = self._coerce_value(key, value, effective_hint)
 
         # 3. Type check (always; strict controls whether coercion was attempted first)
-        if field_hint is not None:
-            self._check_type_with_message(subject=key, value=value, hint=field_hint)
-
-        if default_hint is not None:
-            try:
-                same_hint = field_hint == default_hint
-            except Exception:
-                same_hint = field_hint is default_hint
-            if not same_hint:
-                self._check_type_with_message(
-                    subject=key,
-                    value=value,
-                    hint=default_hint,
-                    conflict_hint=field_hint if field_hint is not None else None,
-                )
+        self._check_value_hint(key, value, field_hint=field_hint, default_hint=default_hint)
 
         # 4. Apply validators "after" (restrictive transformations)
         value = self._apply_validators(key, value, mode="after")
@@ -761,6 +741,40 @@ class modict(dict, metaclass=modictMeta):
             self._check_json_serializable(key, value)
 
         return value
+
+    def _resolve_value_hints(self, key, *, hint=None):
+        field = self.__fields__.get(key)
+        field_hint = hint
+        if field_hint is None and field and field.hint is not None:
+            field_hint = field.hint
+        default_hint = self._default_value_hint()
+        effective_hint = field_hint if field_hint is not None else default_hint
+        return field_hint, default_hint, effective_hint
+
+    def _check_value_hint(self, key, value, *, field_hint, default_hint) -> None:
+        if default_hint is not None:
+            self._check_type_with_message(subject=key, value=value, hint=default_hint)
+
+        if field_hint is None:
+            return
+
+        try:
+            same_hint = field_hint == default_hint
+        except Exception:
+            same_hint = field_hint is default_hint
+
+        if same_hint:
+            return
+
+        try:
+            self._check_type_with_message(subject=key, value=value, hint=field_hint)
+        except TypeError as e:
+            if default_hint is not None:
+                raise TypeError(
+                    f"Key {key!r} uses incompatible hints: default hint {default_hint!r} "
+                    f"accepts value {value!r}, but field hint {field_hint!r} rejects it"
+                ) from e
+            raise
 
     def _apply_validators(self, key, value, *, mode: Literal["before", "after"] = "before"):
         """Apply field validators for a given phase (parent → child).
@@ -776,7 +790,12 @@ class modict(dict, metaclass=modictMeta):
         any_validators = getattr(type(self), "__any_validators__", ())
         for validator in any_validators:
             if getattr(validator, "mode", "before") == mode:
-                value = validator(self, key, value)
+                depth = getattr(self, "_in_any_validator", 0)
+                object.__setattr__(self, "_in_any_validator", depth + 1)
+                try:
+                    value = validator(self, key, value)
+                finally:
+                    object.__setattr__(self, "_in_any_validator", depth)
 
         field = self.__fields__.get(key)
         validators = getattr(field, "validators", None)
@@ -911,6 +930,25 @@ class modict(dict, metaclass=modictMeta):
             "Set frozen=False in config to allow modifications."
         )
 
+    def _check_not_in_any_validator(self, action: Literal["assign", "delete", "clear"], key=None) -> None:
+        if not getattr(self, "_in_any_validator", 0):
+            return
+
+        if action == "assign":
+            raise TypeError(
+                f"Cannot assign to field '{key}' inside any_validator. "
+                "Return the transformed value instead, or use model_validator for instance mutations."
+            )
+        if action == "delete":
+            raise TypeError(
+                f"Cannot delete field '{key}' inside any_validator. "
+                "Use model_validator for instance mutations."
+            )
+        raise TypeError(
+            "Cannot clear instance inside any_validator. "
+            "Use model_validator for instance mutations."
+        )
+
     def _enforce_assignment_policy(self, key, value, *, check_keys_enabled: bool) -> bool:
         # Prevent accidental overwrites of computed fields unless explicitly allowed.
         # This is a key-level constraint, controlled by check_keys.
@@ -936,9 +974,8 @@ class modict(dict, metaclass=modictMeta):
     def _store_item(self, key, value, *, validate_value: bool) -> None:
         if self._should_ignore_none_assignment(value):
             return
+        self._check_not_in_any_validator("assign", key=key)
         self._check_mutable("assign", key=key)
-        normalized_key = self._normalize_key(key)
-        key = normalized_key
 
         # Inside a model_validator the full pipeline is suspended: the validator
         # has authority over the instance and is responsible for correctness.
@@ -952,6 +989,8 @@ class modict(dict, metaclass=modictMeta):
         # respect override_computed — except when storing the exact same object
         # that is already there (no-op echo from a model_validator snapshot).
         if isinstance(value, Computed):
+            normalized_key = self._normalize_key(key)
+            key = normalized_key
             existing_raw = dict.get(self, key, MISSING)
             if existing_raw is value:
                 return  # Same Computed object — pure no-op, skip everything.
@@ -962,36 +1001,50 @@ class modict(dict, metaclass=modictMeta):
             self._invalidate_dependants({key})
             return
 
-        check_keys_enabled = self._check_keys_enabled()
-        should_store = self._enforce_assignment_policy(key, value, check_keys_enabled=check_keys_enabled)
-        if not should_store:
-            return
+        model_validators = getattr(type(self), "__model_validators__", ()) if validate_value else ()
+        if not model_validators:
+            normalized_key = self._normalize_key(key)
+            key = normalized_key
 
-        existing = dict.get(self, key, MISSING)
-
-        # Fast path: if the raw stored value is already the same object or the
-        # same concrete value, skip validation/coercion and cache invalidation.
-        # Keep this strict enough that `"3"` -> `3` still goes through the
-        # pipeline for typed fields.
-        if existing is not MISSING and not isinstance(existing, Computed):
-            if existing is value:
+            check_keys_enabled = self._check_keys_enabled()
+            should_store = self._enforce_assignment_policy(key, value, check_keys_enabled=check_keys_enabled)
+            if not should_store:
                 return
-            if type(existing) is type(value):
-                try:
-                    if existing == value:
-                        return
-                except Exception:
-                    pass
+
+            existing = dict.get(self, key, MISSING)
+
+            # Fast path: if the raw stored value is already the same object or the
+            # same concrete value, skip validation/coercion and cache invalidation.
+            # Keep this strict enough that `"3"` -> `3` still goes through the
+            # pipeline for typed fields.
+            if existing is not MISSING and not isinstance(existing, Computed):
+                if existing is value:
+                    return
+                if type(existing) is type(value):
+                    try:
+                        if existing == value:
+                            return
+                    except Exception:
+                        pass
 
         if validate_value:
-            model_validators = getattr(type(self), "__model_validators__", ())
             if model_validators:
                 working = self._clone_for_assignment_validation()
-                working._store_item(key, value, validate_value=False)
+                working._raw_setitem(key, value)
+                working._invalidate_dependants({key})
                 working.validate()
                 self._replace_instance_state(working)
                 return
             value = self._check_value(key, value)
+
+        if model_validators:
+            normalized_key = self._normalize_key(key)
+            key = normalized_key
+
+            check_keys_enabled = self._check_keys_enabled()
+            should_store = self._enforce_assignment_policy(key, value, check_keys_enabled=check_keys_enabled)
+            if not should_store:
+                return
         self._raw_setitem(key, value)
         self._invalidate_dependants({key})
 
@@ -1046,6 +1099,7 @@ class modict(dict, metaclass=modictMeta):
         )
 
     def __delitem__(self, key):
+        self._check_not_in_any_validator("delete", key=key)
         self._check_mutable("delete", key=key)
         check_keys_enabled = self._check_keys_enabled()
         if check_keys_enabled:
@@ -1267,6 +1321,7 @@ class modict(dict, metaclass=modictMeta):
             return self[key]
 
     def clear(self):
+        self._check_not_in_any_validator("clear")
         self._check_mutable("clear")
         check_keys_enabled = self._check_keys_enabled()
         if check_keys_enabled and getattr(self, "__fields__", None):

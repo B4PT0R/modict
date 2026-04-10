@@ -1,0 +1,36 @@
+[meta]
+command = "python benchmarks/run_all.py"
+updated_at_utc = "2026-04-10T06:37:11+00:00"
+
+[scripts."collections_utils_ops.py"]
+"deep_merge / nested mappings" = 34.64
+"diff_nested / similar payloads" = 81.99
+"get_nested / existing path" = 8.42
+"set_nested / existing path" = 11.58
+"unwalk / rebuild flattened payload" = 47.93
+"walk / nested payload" = 97.98
+
+[scripts."modict_core_ops.py"]
+"bulk update / changed values" = 50.54
+"bulk update / no-op values" = 31.59
+"computed read / cached" = 3.72
+"computed write+read / invalidated" = 41.25
+"typed assignment / coercion path" = 16.58
+"typed assignment / no-op fast path" = 10.56
+
+[scripts."path_utils_ops.py"]
+"Path / chained child construction" = 10.70
+"Path / parse JSONPath string" = 4.72
+"Path / relative_to prefix" = 10.24
+"Path / resolve existing path" = 2.97
+"Path / slice with retained root" = 4.51
+"Path / walk nested payload" = 88.73
+
+[scripts."typechecker_cache.py"]
+"check_type cache / nested generic" = 36.94
+"check_type cache / simple int" = 0.54
+"check_type no cache / nested generic" = 116.29
+"coerce cache / nested generic" = 72.03
+"coerce no cache / nested generic" = 286.84
+"modict init cache" = 259.65
+"modict init no cache" = 532.95

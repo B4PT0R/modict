@@ -164,8 +164,8 @@ class Fibers(modict[str, "Fiber"]):
 That generic form acts as a default runtime hint for undeclared items:
 - keys use the class-level key hint
 - values use the class-level value hint when no field-specific hint is declared
-- if a field declares its own hint, that field hint is checked first, then the
-  class-level default value hint is still enforced
+- if a field declares its own hint, the class-level default value hint is
+  checked first, then the field hint is enforced on top
 
 Use `modict.field(...)` when you need more explicit control over a field
 definition:
@@ -200,9 +200,11 @@ assert u.age == 30
 Note: if you pass `hint=...` explicitly in `modict.field(...)`, it takes precedence over the class annotation.
 
 When a field-specific hint and the class-level default value hint are
-incompatible, modict raises an error if a value passes the field hint but fails
-the default value hint. This prevents a "uniformly typed" modict from being
-quietly weakened by one field override.
+incompatible, modict raises an error if a value passes the default value hint
+but fails the field hint. This prevents a field override from silently
+narrowing a value that is otherwise accepted by the class-level homogeneous
+contract. If the value already fails the class-level default value hint, modict
+raises the normal default-hint type error instead.
 
 
 [↑ Back to top](#contents)
@@ -256,6 +258,7 @@ Use `@modict.any_validator(mode="before"|"after")` to run a key-aware validator 
 
 - Expected signature: `(self, key, value) -> value`
 - Useful for reactive dispatch, generic normalization, or shared policies across declared and undeclared keys
+- `any_validator` is a pure value hook: do not mutate the instance inside it. Return the transformed value instead. For multi-key or structural mutations, use `model_validator`.
 
 ```python
 from modict import modict
@@ -272,7 +275,7 @@ class Payload(modict):
 
 Use `@modict.model_validator(mode="before"|"after")` for checks that span multiple fields.
 
-The method receives only the live instance (`self`) and mutates it in place. The validation pipeline is **suspended** during execution — field validators, type coercion, and key constraints do not apply to assignments made inside the method. The validator has full authority.
+The method receives only the live instance (`self`) and mutates it in place. The validation pipeline is **suspended** during execution — field validators, type coercion, and key constraints do not apply to assignments made inside the method while it runs. Once the model validators are done, structural key checks still apply to the final state.
 
 - `mode="before"` — runs after individual field validators `"before"`, before coercion/type-checking
 - `mode="after"` — runs after individual field validators `"after"`, after coercion/type-checking
@@ -402,6 +405,11 @@ Order of operations for a field value:
 3. type check against hint (if the field has a type annotation)
 4. field validators in `mode="after"` (receive coerced, typed value)
 5. JSON-serializability check (`enforce_json=True`, with optional encoders)
+
+At model level, `model_validator(mode="before")` and `model_validator(mode="after")`
+run before the final key pipeline. Structural key checks such as default key
+hints from `modict[K, V]`, `extra`, and `required` are enforced on the final
+post-validator state.
 
 If any step raises, the whole assignment is rejected.
 

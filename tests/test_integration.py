@@ -159,9 +159,9 @@ def test_before_model_validator_replays_on_item_assignment():
     assert m.y == 5
 
 
-def test_after_model_validator_bypasses_extra_policy():
-    """Inside a model_validator the pipeline is suspended: the validator has full
-    authority and assignments bypass extra/computed/type constraints."""
+def test_after_model_validator_final_state_still_respects_extra_policy():
+    """Assignments inside model_validator bypass checks while it runs, but the
+    final post-validator state still goes through structural validation."""
     class StrictModel(md):
         _config = md.config(extra="forbid")
         x: int
@@ -170,8 +170,8 @@ def test_after_model_validator_bypasses_extra_policy():
         def inject_extra(self):
             self["oops"] = 2
 
-    m = StrictModel(x=1)
-    assert m["oops"] == 2
+    with pytest.raises(KeyError, match="Key 'oops' is not allowed"):
+        StrictModel(x=1)
 
 
 def test_after_model_validator_invalidates_computed_dependants():
