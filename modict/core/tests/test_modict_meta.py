@@ -75,6 +75,19 @@ def test_instance_configs_do_not_share_mutable_fields():
     assert float not in right._config.json_encoders
 
 
+def test_subclass_config_method_uses_subclass_config_as_base():
+    class A(modict):
+        _config = modict.config(strict=True, extra="forbid")
+
+    class B(A):
+        _config = A.config(extra="allow")
+
+    assert A._config.strict is True
+    assert A._config.extra == "forbid"
+    assert B._config.strict is True
+    assert B._config.extra == "allow"
+
+
 def test_modict_views_reflect_mutations():
     m = modict(a=1, b=2)
     keys_view = m.keys()

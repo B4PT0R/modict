@@ -162,7 +162,11 @@ class modict(dict, metaclass=modictMeta):
         Returns:
             modictConfig instance
         """
-        return modictConfig(**kwargs)
+        base_config = getattr(cls, "_config", None)
+        local_config = modictConfig(**kwargs)
+        if base_config is None:
+            return local_config
+        return base_config.merge(local_config)
 
     @classmethod
     def field(

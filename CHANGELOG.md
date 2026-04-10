@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.16
+
+### Fixed
+- `A.config(...)` now uses `A`'s effective config as its base, so deeper subclasses can override config through an intermediate subclass without dropping inherited settings.
+
+### Tests
+- Added regression coverage for chained config overrides declared via an intermediate subclass' `config()` classmethod.
+
 ## 0.4.15
 
 ### Added
