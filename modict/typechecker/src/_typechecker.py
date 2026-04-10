@@ -219,18 +219,22 @@ class TypeChecker:
             )
             if wrapper is not None
         )
-        self._fast_isinstance_hints = (
-            str,
-            float,
-            bool,
-            bytes,
-            bytearray,
-            list,
-            tuple,
-            dict,
-            set,
-            frozenset,
-        )
+        self._NoneType = type(None)
+        self._self_type = getattr(typing, "Self", None)
+        self._type_alias_type = getattr(typing, "TypeAliasType", None)
+        self._special_form_names = frozenset({
+            'Union', 'Optional', 'ClassVar', 'Final', 'Literal',
+            'TypeGuard', 'ParamSpec', 'Concatenate', 'Annotated',
+            'LiteralString', 'Never', 'NoReturn',
+        })
+        self._generic_alias_types = tuple(filter(None, (
+            getattr(typing, '_GenericAlias', None),
+            getattr(typing, 'GenericAlias', None),
+            getattr(typing, '_SpecialGenericAlias', None),
+            getattr(types, 'GenericAlias', None),
+        )))
+        self._has_union_type = hasattr(types, "UnionType")
+        self._union_type = getattr(types, "UnionType", None)
 
     def _maybe_get_cached(self, cache: dict[Any, Any], key: Any, factory: Callable[[], Any]) -> Any:
         if not self.use_cache:
@@ -252,14 +256,14 @@ class TypeChecker:
         """
         Check if a value matches the given type hint.
         Main entry point of the TypeChecker class
-        
+
         Args:
             hint: A type annotation or typing construct
             value: The value to check against the type hint
-            
+
         Returns:
             bool: True if the value matches the type hint
-            
+
         Raises:
             TypeMismatchError: When the value doesn't match the type hint
             TypeCheckError: When some minor error made the type check impossible
@@ -277,10 +281,11 @@ class TypeChecker:
 
         try:
             self._active_checks.add(guard_key)
-            result = self._check_type_internal(hint, value)
+            # Go directly to plan dispatch — fast path already failed
+            result = self._check_type_from_plan(hint, value)
             if not isinstance(result, bool):
                 raise TypeCheckFailureError(
-                    f"_check_type_internal returned non-boolean value: {result}"
+                    f"_check_type_from_plan returned non-boolean value: {result}"
                 )
             if not result:
                 raise TypeMismatchError()
@@ -307,7 +312,7 @@ class TypeChecker:
     def _is_runtime_wrapper(self, hint: Any) -> bool:
         """Return True for wrappers such as Required[T] and NotRequired[T]."""
         origin = get_origin(hint)
-        return origin in self._typing_wrapper_origins()
+        return origin in self._runtime_wrapper_origins
 
     def _unwrap_runtime_wrapper(self, hint: Any) -> Any:
         """Unwrap runtime-transparent typing wrappers to their inner type."""
@@ -630,24 +635,11 @@ class TypeChecker:
     def _is_generic_alias(self, hint):
         """
         Check if a hint is a generic alias like List[int], Dict[str, int], etc.
-        Handles different implementations across Python versions.
-        
-        Args:
-            hint: The type hint to check
-            
-        Returns:
-            bool: True if the hint is a generic alias
         """
-        # First check if it's a special form - if so, it's not considered a generic alias
         if self._is_special_form(hint):
             return False
-            
-        # Now check generic alias indicators
-        return (hasattr(typing, '_GenericAlias') and isinstance(hint, typing._GenericAlias) or
-                hasattr(typing, 'GenericAlias') and isinstance(hint, typing.GenericAlias) or
-                hasattr(typing, '_SpecialGenericAlias') and isinstance(hint, typing._SpecialGenericAlias) or
-                hasattr(types, 'GenericAlias') and isinstance(hint, types.GenericAlias) or
-                getattr(hint, '__origin__', None) is not None)
+        return (isinstance(hint, self._generic_alias_types)
+                or getattr(hint, '__origin__', None) is not None)
 
     def _is_typeddict(self, hint):
         """Check if a hint is a TypedDict."""
@@ -657,42 +649,23 @@ class TypeChecker:
         """
         Check if a hint is a special form (Union, Optional, ClassVar, etc.).
         Uses a consistent approach that works across Python versions.
-        
-        Args:
-            hint: The type hint to check
-            
-        Returns:
-            bool: True if the hint is a special form
         """
-
         # Handle PEP 604 union types (Python 3.10+)
-        if hasattr(types, "UnionType") and isinstance(hint, types.UnionType):
+        if self._has_union_type and isinstance(hint, self._union_type):
             return True
 
         origin = get_origin(hint)
         if origin in self._annotated_origins:
             return True
 
-        # Known special form names for validation (Protocols are handled separately)
-        special_form_names = {
-            'Union', 'Optional', 'ClassVar', 'Final', 'Literal',
-            'TypeGuard', 'ParamSpec', 'Concatenate', 'Annotated',
-            'LiteralString', 'Never', 'NoReturn'
-        }
-        
-        # The most reliable approach: check the name attribute
+        # Check the name attribute (parameterized or direct)
         name = None
-        
-        # For parameterized special forms, get name from origin
         if origin is not None:
             name = getattr(origin, '_name', None)
-        
-        # For direct special forms, get name directly
         if name is None:
             name = getattr(hint, '_name', None)
-        
-        # Return True if we found a matching name
-        return name in special_form_names
+
+        return name in self._special_form_names
 
     def _get_special_form_name(self, hint):
         """
@@ -790,8 +763,37 @@ class TypeChecker:
         )
 
     def _build_hint_plan(self, hint: Any) -> CompiledHint:
-        if hasattr(typing, "Self") and hint is typing.Self:
+        # ── Rare hint wrappers (cached so they're only computed once per hint) ──
+
+        # TypeAliasType (PEP 695)
+        if self._type_alias_type is not None and isinstance(hint, self._type_alias_type):
+            value = getattr(hint, "__value__", None)
+            if value is None:
+                raise TypeCheckError(f"Invalid TypeAliasType payload: {hint!r}")
+            return CompiledHint(kind="type_alias", args=(value,))
+
+        # ForwardRef object
+        if isinstance(hint, typing.ForwardRef):
+            arg = getattr(hint, "__forward_arg__", None)
+            if not isinstance(arg, str):
+                raise TypeCheckError(f"Invalid ForwardRef payload: {hint!r}")
+            return CompiledHint(kind="forward_ref", args=(arg,))
+
+        # Self (PEP 673)
+        if self._self_type is not None and hint is self._self_type:
             return CompiledHint(kind="self")
+
+        # Compute origin once — reused by several checks below
+        origin = get_origin(hint)
+
+        # Runtime-transparent wrappers: Required[T], NotRequired[T], ReadOnly[T]
+        if origin is not None and origin in self._runtime_wrapper_origins:
+            inner = get_args(hint)
+            if len(inner) != 1:
+                raise TypeCheckError(f"{origin} requires exactly 1 type argument")
+            return CompiledHint(kind="runtime_wrapper", args=(inner[0],))
+
+        # ── Standard hint kinds ──
 
         if self._is_typeddict(hint):
             return CompiledHint(kind="typeddict")
@@ -806,7 +808,8 @@ class TypeChecker:
             )
 
         if self._is_generic_alias(hint):
-            origin = get_origin(hint)
+            if origin is None:
+                origin = get_origin(hint)
             return CompiledHint(
                 kind="generic_alias",
                 origin=origin,
@@ -843,96 +846,91 @@ class TypeChecker:
         return isinstance(value,hint)
 
     def _check_type_fast_path(self, hint: Any, value: Any) -> bool | None:
-        """Fast path for the most common non-recursive runtime checks."""
-        if hint in (None, type(None)):
-            return value is None
+        """Fast path for the most common non-recursive runtime checks.
 
-        if hint in (Any, object):
-            return True
-
+        Ordered by realistic frequency: int/str/float first, then bool,
+        None, bare containers, Any/object last.
+        """
+        # Most common types first - single identity check each
         if hint is int:
             return isinstance(value, int) and not isinstance(value, bool)
-
-        if hint in self._fast_isinstance_hints:
-            return isinstance(value, hint)
-
+        if hint is str:
+            return isinstance(value, str)
+        if hint is float:
+            return isinstance(value, float)
+        if hint is bool:
+            return isinstance(value, bool)
+        if hint is None or hint is self._NoneType:
+            return value is None
+        if hint is Any or hint is object:
+            return True
+        if hint is list:
+            return isinstance(value, list)
+        if hint is dict:
+            return isinstance(value, dict)
+        if hint is tuple:
+            return isinstance(value, tuple)
+        if hint is set:
+            return isinstance(value, set)
+        if hint is frozenset:
+            return isinstance(value, frozenset)
+        if hint is bytes:
+            return isinstance(value, bytes)
+        if hint is bytearray:
+            return isinstance(value, bytearray)
         return None
 
     def _check_type_internal(self, hint: Any, value: Any) -> bool:
-        """
-        Internal method to check if a value matches the given type hint.
-        This is the core recursive method that handles all type hint varieties.
-        
-        Args:
-            hint: A type annotation or typing construct
-            value: The value to check against the type hint
-            
-        Returns:
-            bool: True if the value matches the type hint, False otherwise
-            
-        Raises:
-            TypeCheckError: When some error made the type check impossible
-        """
+        """Recursive type check — includes fast path, no recursion guard."""
         fast_result = self._check_type_fast_path(hint, value)
         if fast_result is not None:
             return fast_result
+        return self._check_type_from_plan(hint, value)
 
-        if self._is_type_alias_hint(hint):
-            return self.check_type(self._unwrap_type_alias_hint(hint), value)
+    def _check_type_from_plan(self, hint: Any, value: Any) -> bool:
+        """Dispatch based on compiled hint plan.
 
-        if self._is_forward_ref_hint(hint):
-            return self._check_forward_ref(self._unwrap_forward_ref_hint(hint), value)
-
-        # Runtime-transparent wrappers such as Required[T] and NotRequired[T]
-        if self._is_runtime_wrapper(hint):
-            return self._check_type_internal(self._unwrap_runtime_wrapper(hint), value)
-        
+        Called after the fast path already returned None.  All rare hint
+        kinds (type_alias, forward_ref, runtime_wrapper) are now handled
+        via the cached plan so they cost nothing on repeated calls.
+        """
         plan = self._compile_hint(hint)
+        kind = plan.kind
 
-        # Case 9: TypedDict
-        if plan.kind == "typeddict":
-            return self._check_typeddict(hint, value)
-
-        # Handle Self type (PEP 673)
-        if plan.kind == "self":
-            # For Self, check if value is an instance of the class that contains the annotation
-            # This is a simplified approach - we can't truly know the containing class
-            # but we can check against the value's own class
-            return isinstance(value, value.__class__)
-        
-        # Case 1: Protocol check
-        if plan.kind == "protocol":
-            return self._check_protocol(hint, value)
-        
-        # Case 2: Special form (Union, Optional, etc.)
-        if plan.kind == "special_form":
-            return self._check_special_form_compiled(hint, value, plan)
-                
-        # Case 3: Generic alias (List[int], Dict[str, int], Callable[[int,str],int], etc.)
-        if plan.kind == "generic_alias":
-            return self._check_generic_alias_compiled(hint, value, plan)
-        
-        # Case 4: Generic Classes
-        if plan.kind == "generic_class":
-            return self._check_generic_typevar(hint, value)
-
-        # Case 5: Basic type check (int, str, etc.)
-        if plan.kind == "basic_type":
+        # Ordered by realistic frequency: basic_type and special_form
+        # are the most common destinations in recursive element checks.
+        if kind == "basic_type":
             return self._check_basic_type(hint, value)
-        
-        # Case 6: TypeVar
-        if plan.kind == "typevar":
+        if kind == "special_form":
+            return self._check_special_form_compiled(hint, value, plan)
+        if kind == "generic_alias":
+            return self._check_generic_alias_compiled(hint, value, plan)
+        if kind == "typeddict":
+            return self._check_typeddict(hint, value)
+        if kind == "protocol":
+            return self._check_protocol(hint, value)
+
+        # ── Rare / wrapper kinds (cached — computed once per hint) ──
+        if kind == "type_alias":
+            return self.check_type(plan.args[0], value)
+        if kind == "runtime_wrapper":
+            return self._check_type_internal(plan.args[0], value)
+        if kind == "forward_ref":
+            return self._check_forward_ref(plan.args[0], value)
+        if kind == "self":
+            return isinstance(value, value.__class__)
+        if kind == "generic_class":
+            return self._check_generic_typevar(hint, value)
+        if kind == "typevar":
             return self._check_typevar(hint, value)
-                    
-        # Case 7: Forward references (strings)
+
+        # String forward references (bare strings as hints)
         if isinstance(hint, str):
             return self._check_forward_ref(hint, value)
-            
-        # Case 8: NewType
-        if plan.kind == "newtype":
+
+        if kind == "newtype":
             return self._check_type_internal(hint.__supertype__, value)
-            
-        # Unknown type hint
+
         raise TypeCheckError(f"Unsupported type hint: {hint}")
 
     def _check_special_form(self, hint, value):
@@ -954,8 +952,7 @@ class TypeChecker:
         """
 
         # Handle PEP 604 union types (Python 3.10+)
-        if hasattr(types, "UnionType") and isinstance(hint, types.UnionType):
-            # Delegate to _check_union for PEP 604 unions (int | str)
+        if self._has_union_type and isinstance(hint, self._union_type):
             return self._check_union(hint, value)
         
         origin = get_origin(hint)
@@ -1013,34 +1010,32 @@ class TypeChecker:
 
     def _check_generic_alias_compiled(self, hint, value, plan: CompiledHint):
         origin = plan.origin
-        args = plan.args
-            
-        # Case 2: Generic classes with type parameters
+
         if plan.parameterized_generic:
             return self._check_generic_typevar(hint, value)
-        
-        # Case 3: Standard origins
+
+        # Direct dict dispatch — avoids getattr + string formatting per call
         if plan.checker_kind is not None:
-            checker = getattr(self, f"_check_{plan.checker_kind}")
-            return checker(hint,value)
-        
-        # Case 4: Generic typevar
-        if isinstance(origin,typing.Generic):
-            return self._check_generic_typevar(hint,value)
-        
-        # Case 5: Fall back to origin type check
+            checker = self._checker_by_origin.get(origin)
+            if checker is not None:
+                return checker(hint, value)
+            checker = getattr(self, f"_check_{plan.checker_kind}", None)
+            if checker is not None:
+                return checker(hint, value)
+
+        if isinstance(origin, typing.Generic):
+            return self._check_generic_typevar(hint, value)
+
         if origin is not None:
             if self._is_special_origin(origin):
                 return self._check_special_form(hint, value)
             return self._check_basic_type(origin, value)
-        
-        # Case 6: Custom generic classes where origin is None
+
         if plan.hint_origin is not None:
             if self._is_special_origin(plan.hint_origin):
                 return self._check_special_form(hint, value)
             return self._check_basic_type(plan.hint_origin, value)
-        
-        # Unknown generic alias
+
         raise TypeCheckError(f"Unsupported generic alias: {hint}")
 
     def _get_checker(self, origin):
@@ -1263,82 +1258,99 @@ class TypeChecker:
         """
         Base method for checking homogeneous sequence-like collections.
         Used for List, Sequence, MutableSequence, etc.
-        
-        Args:
-            hint: The sequence type hint
-            value: The value to check
         """
         origin=get_origin(hint) or hint
         args = get_args(hint)
 
         if not isinstance(value, self._origin_to_type(origin)):
             return False
-        
+
         if len(args) != 1:
             raise TypeCheckError(f"Sequence type requires exactly 1 type argument")
-            
+
         elem_type = args[0]
-        
+
         # Handle iterators specially - don't consume them
         if isinstance(value, collections.abc.Iterator):
             return True
-            
+
+        # Inline fast checks for common element types to avoid per-element
+        # function call overhead (_check_type_internal → _check_type_fast_path).
+        if elem_type is int:
+            return all(isinstance(v, int) and not isinstance(v, bool) for v in value)
+        if elem_type is str:
+            return all(isinstance(v, str) for v in value)
+        if elem_type is float:
+            return all(isinstance(v, float) for v in value)
+        if elem_type is bool:
+            return all(isinstance(v, bool) for v in value)
+
         return all(self._check_type_internal(elem_type, item) for item in value)
 
     def _check_set_like(self, hint, value):
         """
         Base method for checking set-like collections (unordered, unique elements).
         Used for Set, MutableSet, FrozenSet, etc.
-        
-        Args:
-            hint: The set type hint
-            value: The value to check
         """
         origin=get_origin(hint) or hint
         args = get_args(hint)
 
         if not isinstance(value, self._origin_to_type(origin)):
             return False
-        
+
         if len(args) != 1:
             raise TypeCheckError(f"Set type requires exactly 1 type argument")
-            
+
         elem_type = args[0]
-        
-        # Empty set is valid
+
         if not value:
             return True
-            
+
+        # Inline fast checks for common element types
+        if elem_type is int:
+            return all(isinstance(v, int) and not isinstance(v, bool) for v in value)
+        if elem_type is str:
+            return all(isinstance(v, str) for v in value)
+
         return all(self._check_type_internal(elem_type, item) for item in value)
     
     def _check_mapping_like(self, hint, value):
         """
         Base method for checking mapping-like collections (key-value pairs).
         Used for Dict, Mapping, MutableMapping, etc.
-        
-        Args:
-            hint: The mapping type hint
-            value: The value to check
-            expected_type: The expected container type
         """
         origin=get_origin(hint) or hint
         args = get_args(hint)
 
         if not isinstance(value, self._origin_to_type(origin)):
             return False
-        
+
         if len(args) != 2:
             raise TypeCheckError(f"Mapping type requires exactly 2 type arguments")
-            
+
         key_type, value_type = args
-        
-        # Empty mapping is valid
+
         if not value:
             return True
-            
+
+        # Inline fast checks for the most common pattern: dict[str, <basic>]
+        if key_type is str:
+            if value_type is int:
+                return all(
+                    isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+                    for k, v in value.items()
+                )
+            if value_type is str:
+                return all(isinstance(k, str) and isinstance(v, str) for k, v in value.items())
+            if value_type is float:
+                return all(isinstance(k, str) and isinstance(v, float) for k, v in value.items())
+            # str keys, complex value type
+            _check = self._check_type_internal
+            return all(isinstance(k, str) and _check(value_type, v) for k, v in value.items())
+
         return all(
-            self._check_type_internal(key_type, k) and 
-            self._check_type_internal(value_type, v) 
+            self._check_type_internal(key_type, k) and
+            self._check_type_internal(value_type, v)
             for k, v in value.items()
         )
 

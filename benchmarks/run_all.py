@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent
 BASELINE_PATH = ROOT / "baseline.toml"
 SCRIPTS = [
     ROOT / "typechecker_cache.py",
+    ROOT / "typechecker_validation.py",
     ROOT / "modict_core_ops.py",
     ROOT / "path_utils_ops.py",
     ROOT / "collections_utils_ops.py",

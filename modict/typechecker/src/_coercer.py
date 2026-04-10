@@ -86,19 +86,25 @@ class Coercer:
         """
         Main entry point: attempts to coerce value to target_hint.
         """
+        # Fast path: if the hint is a basic type and value already matches,
+        # return immediately — no guard key, no set operations.
+        fast = self.type_checker._check_type_fast_path(target_hint, value)
+        if fast is True:
+            return value
+
         guard_key = (id(value), id(target_hint))
         if guard_key in self._active_coercions:
             raise CoercionError(f"Recursive coercion detected for {target_hint!r}")
         try:
             self._active_coercions.add(guard_key)
-            # If already compatible, no coercion needed
-            try:
-                if self.type_checker.check_type(target_hint, value):
-                    return value
-            except (TypeMismatchError, TypeCheckError):
-                pass
-
-            # Otherwise, attempt smart coercion
+            # If fast path returned None (complex hint), try full check
+            if fast is None:
+                try:
+                    if self.type_checker.check_type(target_hint, value):
+                        return value
+                except (TypeMismatchError, TypeCheckError):
+                    pass
+            # fast is False or full check failed → need coercion
             return self._attempt_smart_coercion(value, target_hint)
         finally:
             self._active_coercions.discard(guard_key)
@@ -106,38 +112,40 @@ class Coercer:
     def _attempt_smart_coercion(self, value: Any, target_hint: Any) -> Any:
         """
         Smart coercion based on TypeChecker analysis.
-        """
-        # Use TypeChecker analysis to identify the target type
 
-        # Forward references (strings) — resolve first
+        Uses the cached coercion plan to dispatch — rare hint wrappers
+        (type_alias, forward_ref, runtime_wrapper) are resolved via the
+        plan instead of per-call ``_is_*`` method checks.
+        """
+        # Forward references (bare strings) — resolve first
         if isinstance(target_hint, str):
             return self._coerce_forward_ref(value, target_hint)
-        elif self.type_checker._is_forward_ref_hint(target_hint):
-            return self._coerce_forward_ref(value, self.type_checker._unwrap_forward_ref_hint(target_hint))
-        elif self.type_checker._is_type_alias_hint(target_hint):
-            return self.coerce(value, self.type_checker._unwrap_type_alias_hint(target_hint))
-        elif self.type_checker._is_runtime_wrapper(target_hint):
-            return self.coerce(value, self.type_checker._unwrap_runtime_wrapper(target_hint))
 
         plan = self._compile_coercion_plan(target_hint)
+        kind = plan.kind
 
-        if plan.kind == "protocol":
+        # Dispatch via cached plan — wrapper kinds resolved once per hint
+        if kind == "forward_ref":
+            return self._coerce_forward_ref(value, plan.args[0])
+        if kind == "type_alias":
+            return self.coerce(value, plan.args[0])
+        if kind == "runtime_wrapper":
+            return self.coerce(value, plan.args[0])
+        if kind == "protocol":
             raise CoercionError(f"Cannot coerce {type(value)} to protocol {target_hint}")
-        elif plan.kind == "typeddict":
+        if kind == "typeddict":
             return self._coerce_typeddict(value, target_hint)
-        elif plan.kind == "newtype":
+        if kind == "newtype":
             return self._coerce_newtype(value, target_hint)
-        elif plan.kind == "special_form":
+        if kind == "special_form":
             return self._coerce_special_form_compiled(value, target_hint, plan)
-        elif plan.kind == "generic_alias":
+        if kind == "generic_alias":
             return self._coerce_generic_alias_compiled(value, target_hint, plan)
-        elif plan.kind == "basic_type":
+        if kind == "basic_type":
             return self._coerce_basic_type(value, target_hint)
-        elif isinstance(target_hint, TypeVar):
+        if kind == "typevar":
             return self._coerce_typevar(value, target_hint)
-        else:
-            # Fall back to standard coercions
-            return self._fallback_coercion(value, target_hint)
+        return self._fallback_coercion(value, target_hint)
             
     def _coerce_special_form(self, value: Any, target_hint: Any) -> Any:
         return self._coerce_special_form_compiled(
@@ -151,7 +159,7 @@ class Coercer:
         Coercion for Union, Optional, Literal, etc.
         Reuses TypeChecker analysis logic.
         """
-        if hasattr(types, "UnionType") and isinstance(target_hint, types.UnionType):
+        if self.type_checker._has_union_type and isinstance(target_hint, self.type_checker._union_type):
             return self._coerce_union(value, target_hint)
 
         form_name = plan.special_form_name

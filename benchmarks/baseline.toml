@@ -1,36 +1,74 @@
 [meta]
 command = "python benchmarks/run_all.py"
-updated_at_utc = "2026-04-10T06:37:11+00:00"
+updated_at_utc = "2026-04-10T07:13:35+00:00"
 
 [scripts."collections_utils_ops.py"]
 "deep_merge / nested mappings" = 34.64
 "diff_nested / similar payloads" = 81.99
-"get_nested / existing path" = 8.42
-"set_nested / existing path" = 11.58
+"get_nested / existing path" = 8.33
+"set_nested / existing path" = 11.47
 "unwalk / rebuild flattened payload" = 47.93
 "walk / nested payload" = 97.98
 
 [scripts."modict_core_ops.py"]
-"bulk update / changed values" = 50.54
-"bulk update / no-op values" = 31.59
-"computed read / cached" = 3.72
-"computed write+read / invalidated" = 41.25
-"typed assignment / coercion path" = 16.58
-"typed assignment / no-op fast path" = 10.56
+"bulk update / changed values" = 44.22
+"bulk update / no-op values" = 16.68
+"computed read / cached" = 3.24
+"computed write+read / invalidated" = 35.99
+"typed assignment / coercion path" = 15.30
+"typed assignment / no-op fast path" = 5.88
 
 [scripts."path_utils_ops.py"]
-"Path / chained child construction" = 10.70
-"Path / parse JSONPath string" = 4.72
-"Path / relative_to prefix" = 10.24
-"Path / resolve existing path" = 2.97
+"Path / chained child construction" = 9.46
+"Path / parse JSONPath string" = 4.55
+"Path / relative_to prefix" = 9.40
+"Path / resolve existing path" = 2.90
 "Path / slice with retained root" = 4.51
 "Path / walk nested payload" = 88.73
 
 [scripts."typechecker_cache.py"]
-"check_type cache / nested generic" = 36.94
-"check_type cache / simple int" = 0.54
-"check_type no cache / nested generic" = 116.29
-"coerce cache / nested generic" = 72.03
-"coerce no cache / nested generic" = 286.84
-"modict init cache" = 259.65
-"modict init no cache" = 532.95
+"check_type cache / nested generic" = 17.98
+"check_type cache / simple int" = 0.21
+"check_type no cache / nested generic" = 110.70
+"coerce cache / nested generic" = 39.71
+"coerce no cache / nested generic" = 187.58
+"modict init cache" = 182.02
+"modict init no cache" = 449.52
+
+[scripts."typechecker_validation.py"]
+"check Literal['a','b','c'] (hit)" = 4.79
+"check Literal[1,2,3] (hit)" = 5.06
+"check None" = 0.17
+"check Optional[int] (None)" = 2.34
+"check Optional[int] (value)" = 2.15
+"check bool" = 0.16
+"check dict (bare)" = 0.38
+"check dict[str, int]" = 4.41
+"check dict[str, list[int]]" = 12.24
+"check float" = 0.15
+"check int" = 0.21
+"check int | str (match first)" = 2.15
+"check int | str (match second)" = 2.28
+"check list (bare)" = 0.39
+"check list[dict[str, int | None]]" = 18.82
+"check list[dict[str, int]]" = 11.87
+"check list[int]" = 4.87
+"check set[str]" = 3.66
+"check str" = 0.14
+"check tuple[int, str, bool]" = 4.50
+"coerce Optional[int] (None passthrough)" = 3.01
+"coerce dict[str, str->int]" = 14.11
+"coerce int (already correct)" = 0.22
+"coerce int->float" = 1.56
+"coerce list[dict[str, str->int]]" = 38.07
+"coerce list[str->int]" = 15.06
+"coerce str->float" = 1.77
+"coerce str->int" = 1.72
+"coerce str->int|float (to int)" = 10.21
+"mismatch int (got str)" = 0.71
+"mismatch list[int] (got str in list)" = 5.20
+"modict / 6 fields mixed types" = 84.82
+"modict / flat 3-field (str,int,float)" = 33.88
+"modict / flat 3-field coercion" = 40.09
+"modict / nested model" = 148.09
+"modict / nested model with coercion" = 190.33

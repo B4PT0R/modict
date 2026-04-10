@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.18
+
+### Changed
+- **TypeChecker performance overhaul** — reordered fast-path checks by realistic type frequency (`int`/`str`/`float` first), eliminated redundant double fast-path calls, and integrated rare hint-wrapper detection (`TypeAlias`, `ForwardRef`, `Required`/`NotRequired`) into the cached hint plan so they cost nothing on repeated checks.
+- **Inline element checking** for sequences, sets, and mappings — common element types (`int`, `str`, `float`, `bool`) are now checked inline in the generator, eliminating two function calls per element.
+- **Coercer fast path** — `coerce(value, hint)` returns immediately when the value already matches a basic type, bypassing guard-key allocation and set operations entirely.
+- **Coercer plan dispatch** — `_attempt_smart_coercion` now uses the cached coercion plan for rare hint wrappers instead of calling `_is_*` methods on every invocation.
+- Expanded benchmark suite with `typechecker_validation.py` covering 37 scenarios from simple builtins through nested generics, unions, literals, and full modict init pipelines.
+
+### Performance
+- `check_type(int, 42)`: **-61%** (0.54 → 0.21 us/op)
+- `check_type` cached nested generic: **-51%** (36.94 → 17.98 us/op)
+- `coerce` cached nested generic: **-45%** (72.03 → 39.71 us/op)
+- `modict init` (cached): **-30%** (259.65 → 182.02 us/op)
+- `typed assignment / no-op fast path`: **-44%** (10.56 → 5.88 us/op)
+- `bulk update / no-op values`: **-47%** (31.59 → 16.68 us/op)
+
 ## 0.4.17
 
 ### Changed
