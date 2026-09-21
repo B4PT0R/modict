@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.19
+
+### Fixed
+- Validate callable signatures by binding the promised positional call, accepting
+  compatible variadic/defaulted parameters and rejecting missing keyword-only
+  requirements without executing the callback.
+- Resolve postponed model field annotations in their declaring module before
+  falling back to caller-local resolution. Strict validation, nested coercion,
+  self references and inherited fields now work when constructed from another
+  module without importing its annotation dependencies there.
+
 ## 0.4.18
 
 ### Changed

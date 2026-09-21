@@ -280,6 +280,10 @@ The method receives only the live instance (`self`) and mutates it in place. The
 - `mode="before"` — runs after individual field validators `"before"`, before coercion/type-checking
 - `mode="after"` — runs after individual field validators `"after"`, after coercion/type-checking
 
+Postponed field annotations (`from __future__ import annotations`) are resolved
+in the declaring model's module, including inherited fields. Caller-local
+resolution remains a fallback for locally defined types.
+
 ```python
 from modict import modict
 

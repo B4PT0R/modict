@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+import sys
 from types import ClassMethodDescriptorType
 from typing import Optional, Union, Tuple, Set, Dict, List, Any, Callable, Type
 from ...typechecker import TypeMismatchError, check_type
@@ -747,6 +748,23 @@ class modict(dict, metaclass=modictMeta):
         field_hint = hint
         if field_hint is None and field and field.hint is not None:
             field_hint = field.hint
+        if isinstance(field_hint, str):
+            # Deferred annotations belong to the declaring model, not whichever
+            # module happens to construct it. Keep the legacy stack resolver as
+            # fallback for function-local declarations that have no module name.
+            owner = next((base for base in type(self).__mro__
+                          if key in base.__dict__.get("__annotations__", {})), type(self))
+            module = sys.modules.get(owner.__module__)
+            if module is not None:
+                namespace = {**vars(owner), owner.__name__: owner}
+                try:
+                    resolved = eval(field_hint, vars(module), namespace)
+                    if isinstance(resolved, str):
+                        resolved = eval(resolved, vars(module), namespace)
+                except (NameError, AttributeError):
+                    pass
+                else:
+                    field_hint = resolved
         default_hint = self._default_value_hint()
         effective_hint = field_hint if field_hint is not None else default_hint
         return field_hint, default_hint, effective_hint

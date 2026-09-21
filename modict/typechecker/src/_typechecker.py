@@ -1905,26 +1905,21 @@ class TypeChecker:
             # Can't inspect the function, be lenient
             return True
 
-        # Get relevant parameters (skip *args, **kwargs)
-        params = [
-            p for p in sig.parameters.values()
-            if p.kind in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY
-            )
-        ]
-
-        # Check number of parameters matches
-        if len(params) != len(arg_types):
+        # Callable[[...], R] describes a positional call, not an exact parameter
+        # count. Optional parameters and *args can accept that call too; required
+        # keyword-only parameters cannot. Bind types as placeholders, without
+        # ever executing the callable.
+        try:
+            bound = sig.bind(*arg_types)
+        except TypeError:
             return False
 
-        # Check each parameter type if annotation is present
-        for i, (param, expected_type) in enumerate(zip(params, arg_types)):
+        for name, expected in bound.arguments.items():
+            param = sig.parameters[name]
             if param.annotation != inspect.Parameter.empty:
-                # Callable parameters are contravariant: the implementation must
-                # accept at least the expected input domain.
-                if not self._is_annotation_subtype(expected_type, param.annotation):
+                expected_types = expected if param.kind == inspect.Parameter.VAR_POSITIONAL else (expected,)
+                if any(not self._is_annotation_subtype(expected_type, param.annotation)
+                       for expected_type in expected_types):
                     return False
 
         # Check return type if annotation is present
