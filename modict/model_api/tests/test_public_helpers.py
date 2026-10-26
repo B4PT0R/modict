@@ -165,3 +165,36 @@ def test_build_any_validators_collects_and_removes_decorated_methods():
     assert len(any_validators) == 1
     assert any_validators[0].mode == "after"
     assert "normalize_any" not in dct
+
+
+def test_field_copy_isolates_metadata_and_validator_list_without_copying_defaults():
+    from modict.model_api import Validator
+
+    validator = Validator(lambda self, value: value, "value")
+    default = object()
+    original = Field(hint=str, default=default, validators=[validator], required="at_init")
+
+    clone = original.copy()
+
+    assert clone == original
+    assert clone is not original
+    assert clone.validators is not original.validators
+    assert clone.validators[0] is validator
+    assert clone.default is default
+    clone.add_validator(Validator(lambda self, value: value, "value"))
+    clone.hint = int
+    clone.required = "always"
+    assert original.validators == [validator]
+    assert original.hint is str
+    assert original.required == "at_init"
+
+
+def test_field_copy_without_validators_preserves_missing_default():
+    from modict.collections_utils import MISSING
+
+    original = Field()
+    clone = original.copy()
+
+    assert clone.default is MISSING
+    assert clone.validators == []
+    assert clone.validators is not original.validators

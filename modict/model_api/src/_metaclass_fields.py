@@ -111,6 +111,9 @@ def build_fields_and_model_validators(
         if hasattr(base, "__attributes__"):
             attributes.update(base.__attributes__)  # type: ignore[attr-defined]
 
+    # Each class owns its field metadata and validator lists, not its defaults.
+    fields = {key: field.copy() for key, field in fields.items()}
+
     existing_model_validators = dct.get("__model_validators__")
     if existing_model_validators:
         model_validators.extend(list(existing_model_validators))

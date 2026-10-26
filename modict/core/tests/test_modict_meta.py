@@ -140,3 +140,87 @@ def test_attr_cannot_override_inherited_field():
     base = Base(age=1)
     with pytest.raises(AttributeError, match="declared as a field"):
         base["age"] = modict.attr("nope")
+
+
+@pytest.mark.parametrize("mode", ["before", "after"])
+@pytest.mark.parametrize("parent_has_validator", [False, True])
+def test_subclass_validators_do_not_leak_to_parent_or_siblings(mode, parent_has_validator):
+    class Parent(modict):
+        value: str
+
+        if parent_has_validator:
+            @modict.validator("value", mode=mode)
+            def parent_value(self, value):
+                return value + "P"
+
+    existing = Parent(value="x")
+
+    class Sibling(Parent):
+        pass
+
+    class Child(Parent):
+        @modict.validator("value", mode=mode)
+        def child_value(self, value):
+            return value + "C"
+
+    class Grandchild(Child):
+        @modict.validator("value", mode=mode)
+        def grandchild_value(self, value):
+            return value + "G"
+
+    class LaterSibling(Parent):
+        @modict.validator("value", mode=mode)
+        def sibling_value(self, value):
+            return value + "S"
+
+    prefix = "xP" if parent_has_validator else "x"
+    for model, expected in (
+        (Parent, prefix),
+        (Sibling, prefix),
+        (Child, prefix + "C"),
+        (Grandchild, prefix + "CG"),
+        (LaterSibling, prefix + "S"),
+    ):
+        instance = model(value="x")
+        assert instance.value == expected
+        instance.value = "y"
+        assert instance.value == "y" + expected[1:]
+
+    existing.value = "y"
+    assert existing.value == "y" + prefix[1:]
+
+
+def test_multiple_inheritance_owns_fields_and_keeps_leftmost_precedence():
+    default = object()
+
+    class Left(modict):
+        value: str = modict.field(default=default, required="at_init")
+
+        @modict.validator("value")
+        def left_value(self, value):
+            return value + "L"
+
+    class Right(modict):
+        value: str
+        other: int = 1
+
+        @modict.validator("value")
+        def right_value(self, value):
+            return value + "R"
+
+    class Child(Left, Right):
+        @modict.validator("value")
+        def child_value(self, value):
+            return value + "C"
+
+    assert Child(value="x").value == "xLC"
+    assert Left(value="x").value == "xL"
+    assert Right(value="x").value == "xR"
+    inherited = Child.__fields__["value"]
+    original = Left.__fields__["value"]
+    assert inherited is not original
+    assert inherited.validators is not original.validators
+    assert inherited.hint is original.hint
+    assert inherited.default is default
+    assert inherited.required == "at_init"
+    assert Child.__fields__["other"] is not Right.__fields__["other"]

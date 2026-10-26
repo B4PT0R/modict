@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.20
+
+### Added
+- `Field.copy()` copies field metadata with an independent validator list while
+  retaining references to defaults, type hints, and validator callables.
+
+### Fixed
+- Isolate inherited field metadata and validator lists so subclass validators no
+  longer affect parent classes, existing parent instances, or sibling classes.
+
 ## 0.4.19
 
 ### Fixed

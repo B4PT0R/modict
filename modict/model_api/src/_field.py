@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, List, Literal, Union
 
 from ...collections_utils import MISSING
@@ -34,6 +34,10 @@ class Field:
         if self.validators is None:
             self.validators = []
         self.required = _normalize_required(self.required)
+
+    def copy(self) -> "Field":
+        """Copy field metadata with an independent validator list, sharing defaults."""
+        return replace(self, validators=list(self.validators))
 
     def add_validator(self, validator: Validator) -> None:
         self.validators.append(validator)
