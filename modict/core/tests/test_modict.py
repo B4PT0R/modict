@@ -142,7 +142,7 @@ def test_computed_annotation_hint_does_not_conflict_with_storage():
 
 def test_dynamic_computed_on_declared_field_uses_model_hint_in_lax_mode():
     class WithDeclaredComputedSlot(modict):
-        _config = modict.config(require_all="never")
+        _config = modict.config(default_required="never")
         total: int
 
     m = WithDeclaredComputedSlot()
@@ -154,7 +154,7 @@ def test_dynamic_computed_on_declared_field_uses_model_hint_in_lax_mode():
 
 def test_dynamic_computed_on_declared_field_uses_model_hint_in_strict_mode():
     class StrictComputedSlot(modict):
-        _config = modict.config(strict=True, require_all="never")
+        _config = modict.config(strict=True, default_required="never")
         total: int
 
     m = StrictComputedSlot()
@@ -471,7 +471,7 @@ def test_computed_instance_level_assignment():
 
     # Cas 1: Champ avec annotation de classe, computed assigné à l'instance
     class Calculator(modict):
-        _config = modict.config(require_all="never")
+        _config = modict.config(default_required="never")
         result: float  # Le contrat : result doit être un float
         a: int = 1
         b: int = 2
@@ -646,24 +646,24 @@ def test_field_required_via_modict_field_default_missing():
     assert u.name == "Alice"
 
 
-def test_field_required_never_with_require_all_never():
-    """Field required="never" makes the field optional when require_all is also "never"."""
+def test_field_required_never_with_default_required_never():
+    """Field required="never" makes the field optional when default_required is also "never"."""
     from modict import MISSING
 
     class UserOptional(modict):
-        _config = modict.config(require_all="never")
+        _config = modict.config(default_required="never")
         name: str = modict.field(default=MISSING, required="never")
 
     u = UserOptional({})
     assert "name" not in u
 
 
-def test_field_required_always_overrides_require_all_never():
-    """Field required="always" wins over require_all="never" (stronger constraint wins)."""
+def test_field_required_always_overrides_default_required_never():
+    """Field required="always" wins over default_required="never" (explicit field setting wins)."""
     from modict import MISSING
 
     class UserStrict(modict):
-        _config = modict.config(require_all="never")
+        _config = modict.config(default_required="never")
         name: str = modict.field(default=MISSING, required="always")
 
     with pytest.raises(KeyError):
@@ -671,7 +671,7 @@ def test_field_required_always_overrides_require_all_never():
 
 
 def test_annotation_only_field_is_required_at_init_by_default():
-    """Default require_all="at_init" makes annotation-only fields required at construction."""
+    """Default default_required="at_init" makes annotation-only fields required at construction."""
     class User(modict):
         name: str
 
@@ -682,19 +682,19 @@ def test_annotation_only_field_is_required_at_init_by_default():
     assert u.name == "Alice"
 
 
-def test_annotation_only_field_not_required_when_require_all_never():
-    """Setting require_all="never" makes annotation-only fields optional."""
+def test_annotation_only_field_not_required_when_default_required_never():
+    """Setting default_required="never" makes annotation-only fields optional."""
     class User(modict):
-        _config = modict.config(require_all="never")
+        _config = modict.config(default_required="never")
         name: str
 
     u = User({})
     assert "name" not in u
 
 
-def test_require_all_makes_annotation_only_fields_required():
+def test_default_required_makes_annotation_only_fields_required():
     class User(modict):
-        _config = modict.config(require_all="always")
+        _config = modict.config(default_required="always")
         name: str
         age: int = 25  # defaulted -> still present after init
 
@@ -706,9 +706,9 @@ def test_require_all_makes_annotation_only_fields_required():
     assert u.age == 25
 
 
-def test_require_all_prevents_deleting_computed_fields():
+def test_default_required_prevents_deleting_computed_fields():
     class M(modict):
-        _config = modict.config(require_all="always", override_computed=True)
+        _config = modict.config(default_required="always", override_computed=True)
         a: int = 1
 
         @modict.computed()
@@ -721,9 +721,9 @@ def test_require_all_prevents_deleting_computed_fields():
         del m["doubled"]
 
 
-def test_require_all_prevents_clear_and_translate_stays_safe():
+def test_default_required_prevents_clear_and_translate_stays_safe():
     class M(modict):
-        _config = modict.config(require_all="always", override_computed=True)
+        _config = modict.config(default_required="always", override_computed=True)
         a: int
 
         @modict.computed()

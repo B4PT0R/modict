@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+- Replace `modict.config(require_all=...)` with `default_required=...` (default:
+  `"at_init"`). The old option is no longer accepted. Explicit field `required`
+  settings now override the model default, even when less restrictive.
+- `Field.required` and `modict.field(required=...)` default to `MISSING`, meaning
+  inherit `default_required`. Annotation-only fields, ordinary defaults and
+  computed declarations inherit it too. Explicit `"never"` makes a field optional;
+  `"at_init"` requires presence on construction/validation but permits deletion;
+  `"always"` also prevents deletion. Boolean field settings retain their meaning.
+- `Field.merge()` uses an explicit local requirement before the other field's
+  requirement instead of choosing the stronger constraint.
+
+
 ## 0.4.20
 
 ### Added

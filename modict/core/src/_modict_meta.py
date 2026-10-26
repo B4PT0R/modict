@@ -62,14 +62,14 @@ class modictConfig(BaseConfig):
                          During model instantiation/casting, class-declared computed
                          fields still override incoming values to preserve the target
                          model contract.
-       require_all: Controls the required level for all declared (non-computed) class fields.
+       default_required: Default required level for declared fields without an explicit `required`.
                     Accepts "always", "at_init", "never", or bool (True → "always", False → "never").
                     - "never": fields are optional (dict-like behavior)
                     - "at_init": fields must be present at construction, but can be deleted afterwards
                     - "always": fields must always be present; deletion is blocked
-                    The field-level `required` and `require_all` interact by taking the stronger constraint.
+                    An explicit field-level `required` overrides this default, even when weaker.
        check_keys: Controls whether modict enforces key-level structural constraints.
-           - True (default): active only when the model declares key constraints (extra, require_all, required fields, computed) — early exit otherwise.
+           - True (default): active only when the model declares key constraints (extra, default_required, required fields, computed) — early exit otherwise.
            - False: bypass entirely (dict-like keys, no structural enforcement).
        evaluate_computed: If False, do not evaluate Computed fields on access; treat them
                          as raw stored objects (pure storage mode).
@@ -101,7 +101,7 @@ class modictConfig(BaseConfig):
     # modict-specific
     auto_convert: bool = True
     override_computed: bool = False
-    require_all: Literal["always", "at_init", "never"] = "at_init"
+    default_required: Literal["always", "at_init", "never"] = "at_init"
     check_keys: bool = True
     check_values: bool = True
     evaluate_computed: bool = True
@@ -122,13 +122,13 @@ class modictConfig(BaseConfig):
 
     @classmethod
     def _normalize_kwargs(cls, kwargs: dict[str, Any]) -> dict[str, Any]:
-        # Normalize require_all bool → string enum
-        if 'require_all' in kwargs:
-            val = kwargs['require_all']
+        # Normalize default_required bool → string enum
+        if 'default_required' in kwargs:
+            val = kwargs['default_required']
             if val is True:
-                kwargs['require_all'] = 'always'
+                kwargs['default_required'] = 'always'
             elif val is False:
-                kwargs['require_all'] = 'never'
+                kwargs['default_required'] = 'never'
 
         # Deprecated: coerce -> strict
         if 'coerce' in kwargs:
@@ -239,7 +239,7 @@ class modictMeta(type):
             bool(getattr(field, "validators", ())) for field in fields.values()
         ) or bool(any_validators)
         dct["__has_required_fields__"] = any(
-            getattr(field, "required", "never") != "never" for field in fields.values()
+            field.required is not MISSING and field.required != "never" for field in fields.values()
         )
         dct["__has_declared_computed_fields__"] = any(
             isinstance(getattr(field, "default", None), Computed) for field in fields.values()

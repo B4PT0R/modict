@@ -39,9 +39,9 @@ def test_check_keys_can_bypass_extra_policy():
     assert m["oops"] == 2
 
 
-def test_check_keys_bypasses_require_all_deletion_guards():
+def test_check_keys_bypasses_default_required_deletion_guards():
     class StrictKeys(modict):
-        _config = modict.config(require_all="always")
+        _config = modict.config(default_required="always")
         a: int = 1
 
     s = StrictKeys({})
@@ -49,7 +49,7 @@ def test_check_keys_bypasses_require_all_deletion_guards():
         del s["a"]
 
     class LooseKeys(modict):
-        _config = modict.config(require_all="always", check_keys=False)
+        _config = modict.config(default_required="always", check_keys=False)
         a: int = 1
 
     m = LooseKeys({})

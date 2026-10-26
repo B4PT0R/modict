@@ -147,7 +147,7 @@ def test_ignore_none_setdefault_none_is_noop():
 
 def test_ignore_none_skips_default_none_for_effectively_optional_field():
     class Config(modict):
-        _config = modict.config(ignore_none=True, require_all="never")
+        _config = modict.config(ignore_none=True, default_required="never")
         host: str | None = None
 
     config = Config()
@@ -156,7 +156,7 @@ def test_ignore_none_skips_default_none_for_effectively_optional_field():
 
 def test_ignore_none_keeps_default_none_for_effectively_required_field():
     class Config(modict):
-        _config = modict.config(ignore_none=True, require_all="at_init")
+        _config = modict.config(ignore_none=True, default_required="at_init")
         host: str | None = None
 
     config = Config()
@@ -164,9 +164,9 @@ def test_ignore_none_keeps_default_none_for_effectively_required_field():
     assert config.host is None
 
 
-def test_ignore_none_keeps_default_none_when_field_required_overrides_require_all():
+def test_ignore_none_keeps_default_none_when_field_required_overrides_default_required():
     class Config(modict):
-        _config = modict.config(ignore_none=True, require_all="never")
+        _config = modict.config(ignore_none=True, default_required="never")
         host: str | None = modict.field(default=None, required="always")
 
     config = Config()

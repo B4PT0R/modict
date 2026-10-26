@@ -44,7 +44,7 @@ user.age = "thirty"  # TypeError — automatically
 The dict is now typed. Assignments are checked, defaults are applied, required fields can't be deleted.
 
 > [!NOTE]
-> By default (`require_all="at_init"`), annotated fields without a default must be provided at construction — but can be freely deleted afterwards. modict stays a mutable dict. To enforce permanent presence, use `modict.field(required="always")` or `_config = modict.config(require_all="always")`. To make fields fully optional, use `require_all="never"`.
+> By default (`default_required="at_init"`), annotated fields without a default must be provided at construction — but can be freely deleted afterwards. modict stays a mutable dict. To enforce permanent presence, use `modict.field(required="always")` or `_config = modict.config(default_required="always")`. Use `default_required="never"` to make fields optional by default. An explicit `modict.field(required=...)` always overrides the model default.
 
 ---
 

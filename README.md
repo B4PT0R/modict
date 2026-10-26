@@ -107,7 +107,7 @@ Subclass it to add typed fields and defaults:
 
 ```python
 class User(modict):
-    name: str            # validated/coerced if provided; required at init by default (require_all="at_init")
+    name: str            # validated/coerced if provided; required at init by default (default_required="at_init")
     age: int = 25        # default value
     country: str = "FR"
 
@@ -130,7 +130,7 @@ overlay/merge behavior: incoming `None` values are ignored instead of
 overwriting existing values.
 
 > [!NOTE]
-> Annotated fields without a default are required at construction time by default (`require_all="at_init"`), but can be freely deleted or popped afterwards — modict stays a mutable dict. Use `modict.field(required="always")` or `_config = modict.config(require_all="always")` to enforce presence as a permanent invariant. Use `require_all="never"` to make all fields fully optional.
+> Annotated fields without a default are required at construction time by default (`default_required="at_init"`), but can be freely deleted or popped afterwards — modict stays a mutable dict. Use `modict.field(required="always")` or `_config = modict.config(default_required="always")` to enforce presence as a permanent invariant. Use `default_required="never"` to make fields optional unless they explicitly declare `required`.
 
 Use `modict.field(...)` for full control over hint, default, and validators.
 
@@ -176,7 +176,7 @@ from modict import MISSING, modict
 modict.field(
     default=MISSING,  # default value (MISSING means "no default value")
     hint=None,       # type hint, None = use class annotation when provided
-    required="never",  # "never" | "at_init" | "always" (True → "always", False → "never")
+    required=MISSING,  # inherit default_required; or "never" | "at_init" | "always" (also bool)
     validators=None, # internal: used by the metaclass when collecting @modict.validator(...)
 )
 ```
@@ -519,8 +519,8 @@ class User(modict):
   - `False`: bypassed entirely (pure dict behavior, no coercion or type checking).
 - `check_keys`: `True` (default) / `False`.
   - Key-level constraints are *structural* checks (presence/allowed-keys/invariants), separate from value validation.
-  - `True`: active only when the model declares key constraints (`extra != "allow"`, `require_all != "never"`, computed fields, any field with `required != "never"`, or a default key hint via `modict[K, V]`) — early exit otherwise.
-  - `False`: bypassed entirely — `required`, `require_all`, `extra="forbid"/"ignore"`, and computed overwrite/delete protection are all skipped.
+  - `True`: active only when the model declares key constraints (`extra != "allow"`, `default_required != "never"`, computed fields, any field with an explicit `required="at_init"` or `"always"`, or a default key hint via `modict[K, V]`) — early exit otherwise.
+  - `False`: bypassed entirely — `required`, `default_required`, `extra="forbid"/"ignore"`, and computed overwrite/delete protection are all skipped.
   - Default key hints from `modict[K, V]` are checked here even when `check_values=False`.
   - `frozen=True` is always enforced regardless of `check_keys`.
 
@@ -551,13 +551,21 @@ class Msg(modict):
 - `validate_default`: when `True`, default field values are type-checked at class creation time (skips `Factory`/`Computed`).
 - `from_attributes`: when `True`, `MyModict(obj)` can read declared fields from `obj.field` attributes (when `obj` is not a mapping).
 - `override_computed`: when `False` (default), computed fields are protected at runtime: you cannot overwrite or delete them on an existing instance. During model construction/casting, class-declared computed fields still win over incoming values so the target model contract is preserved.
-- `require_all`: controls the required level for all declared fields. Accepts `"never"` | `"at_init"` | `"always"` (or `bool` for backward compat). Default: `"at_init"`. The field-level `required` and `require_all` interact by taking the stronger constraint (`"always"` > `"at_init"` > `"never"`).
+- `default_required`: required level for fields without an explicit `required`. Accepts `"never"` | `"at_init"` | `"always"` (also `True` for `"always"`, `False` for `"never"`). Default: `"at_init"`. A field with `required=MISSING` (the field default) inherits this setting; any explicit `required` overrides it, including `"never"` under `default_required="always"`.
 - `evaluate_computed`: when `True` (default), computed fields are evaluated on access. When `False`, the `Computed` object itself is returned (pure storage mode, no evaluation).
 
+```python
+class Record(modict):
+    _config = modict.config(default_required="always")
+    id: str                                  # inherits "always"
+    note: str = modict.field(required="never")  # may be absent or deleted
+    label: str = modict.field(required="at_init")  # required initially, deletable later
+```
+
 Required vs defaults (dict-first semantics):
-- A class default (e.g. `age: int = 25`) is an *initializer*: injected once at construction if missing, always removable afterwards.
+- A class default (e.g. `age: int = 25`) is an *initializer*: injected once at construction if missing; removable afterwards unless the effective requirement is `"always"`.
 - `"at_init"` (default): field must be provided at construction, but can be deleted freely after — dict mutability is preserved.
-- `"always"`: field is a permanent invariant — deletion is blocked. Opt in explicitly via `modict.field(required="always")` or `require_all="always"`.
+- `"always"`: field is a permanent invariant — deletion is blocked. Opt in explicitly via `modict.field(required="always")` or `default_required="always"`.
 - When `ignore_none=True`, declared defaults equal to `None` still follow the effective required level:
   - effective required `"never"`: the key is not materialized at init
   - effective required `"at_init"` or `"always"`: the key is materialized with value `None`

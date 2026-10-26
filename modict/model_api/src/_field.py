@@ -9,7 +9,7 @@ from ._core import Computed, Factory, Validator
 
 RequiredLevel = Literal["always", "at_init", "never"]
 
-_REQUIRED_ORDER = {"never": 0, "at_init": 1, "always": 2}
+_REQUIRED_LEVELS = ("never", "at_init", "always")
 
 
 def _normalize_required(value: Union[bool, RequiredLevel]) -> RequiredLevel:
@@ -18,7 +18,7 @@ def _normalize_required(value: Union[bool, RequiredLevel]) -> RequiredLevel:
         return "always"
     if value is False:
         return "never"
-    if value in _REQUIRED_ORDER:
+    if value in _REQUIRED_LEVELS:
         return value  # type: ignore[return-value]
     raise ValueError(f"Invalid required value: {value!r}. Expected 'always', 'at_init', 'never', True, or False.")
 
@@ -28,12 +28,13 @@ class Field:
     hint: Any = None
     default: Any = MISSING
     validators: List[Validator] = None  # type: ignore[assignment]
-    required: Union[bool, RequiredLevel] = "never"
+    required: Union[bool, RequiredLevel] = MISSING
 
     def __post_init__(self) -> None:
         if self.validators is None:
             self.validators = []
-        self.required = _normalize_required(self.required)
+        if self.required is not MISSING:
+            self.required = _normalize_required(self.required)
 
     def copy(self) -> "Field":
         """Copy field metadata with an independent validator list, sharing defaults."""
@@ -43,15 +44,12 @@ class Field:
         self.validators.append(validator)
 
     def merge(self, other: "Field") -> "Field":
-        # Stronger constraint wins when merging
-        self_level = _REQUIRED_ORDER.get(str(self.required), 0)
-        other_level = _REQUIRED_ORDER.get(str(other.required), 0)
-        merged_required = self.required if self_level >= other_level else other.required
+        # Explicit local metadata overrides inherited metadata.
         return Field(
             hint=self.hint or other.hint,
             default=self.default if self.default is not MISSING else other.default,
             validators=(other.validators + self.validators),
-            required=merged_required,
+            required=self.required if self.required is not MISSING else other.required,
         )
 
     def get_default(self) -> Any:
