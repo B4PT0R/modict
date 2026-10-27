@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-10-27
 
 ### Breaking changes
 - Replace `modict.config(require_all=...)` with `default_required=...` (default:
